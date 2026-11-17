@@ -1,0 +1,6 @@
+{
+  "name": "EMS - Employee Management System",
+  "description": "Mobile-first attendance and departure monitoring system for government offices in Bangladesh.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

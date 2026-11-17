@@ -1,0 +1,245 @@
+{
+  "entities": {
+    "Office": {
+      "title": "Office",
+      "description": "Government office in the three-level hierarchy (Head, District, Upazila)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "address": { "type": "string", "minLength": 2, "maxLength": 300 },
+        "level": { "type": "string", "enum": ["head", "district", "upazila"] },
+        "parentOfficeId": { "type": "string", "maxLength": 128 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "geofenceRadiusMeters": { "type": "number" },
+        "startTime": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
+        "graceMinutes": { "type": "number" },
+        "endTime": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "address", "level", "lat", "lng", "geofenceRadiusMeters", "startTime", "graceMinutes", "endTime", "createdAt", "updatedAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Employee or officer account profile and role binding",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "designation": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "address": { "type": "string", "minLength": 2, "maxLength": 300 },
+        "mobile": { "type": "string", "minLength": 6, "maxLength": 30 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "officeId": { "type": "string", "maxLength": 128 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "joiningDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "status": { "type": "string", "enum": ["active", "resigned"] },
+        "resignationDate": { "type": "string", "maxLength": 20 },
+        "profilePhotoPath": { "type": "string", "maxLength": 300 },
+        "role": { "type": "string", "enum": ["employee", "office_head", "district_officer", "head_office", "super_admin"] },
+        "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "boundDeviceId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "designation", "address", "mobile", "email", "officeId", "joiningDate", "status", "role", "approvalStatus", "createdAt", "updatedAt"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Daily check-in, check-out, GPS coordinates, selfie path, and settlement state",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "designation": { "type": "string", "maxLength": 120 },
+        "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "isFieldDuty": { "type": "boolean" },
+        "checkIn": { "type": "object" },
+        "checkOut": { "type": "object" },
+        "initialStatus": { "type": "string", "enum": ["সময়মতো", "বিলম্বিত", "Absent (প্রস্তাবিত)"] },
+        "finalStatus": { "type": "string", "enum": ["On Time", "Late", "Leave", "Absent"] },
+        "settled": { "type": "boolean" },
+        "settledBy": { "type": "string", "maxLength": 128 },
+        "settledByName": { "type": "string", "maxLength": 120 },
+        "settledAt": { "type": "string", "format": "date-time" },
+        "districtComment": { "type": "string", "maxLength": 500 },
+        "photoDeleted": { "type": "boolean" },
+        "photoDeletedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "employeeName", "officeId", "date", "initialStatus", "settled", "photoDeleted", "createdAt", "updatedAt"]
+    },
+    "Settlement": {
+      "title": "Settlement",
+      "description": "Settlement record created by District Officer",
+      "type": "object",
+      "properties": {
+        "attendanceId": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "employeeUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "oldStatus": { "type": "string", "maxLength": 60 },
+        "newStatus": { "type": "string", "enum": ["On Time", "Late", "Leave", "Absent"] },
+        "comment": { "type": "string", "maxLength": 500 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "settledBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "settledByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "settledAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["attendanceId", "employeeUid", "employeeName", "officeId", "date", "newStatus", "settledBy", "settledByName", "settledAt"]
+    },
+    "Leave": {
+      "title": "Leave",
+      "description": "Employee leave application and District Officer approval status",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "startDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "endDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "leaveType": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "reason": { "type": "string", "minLength": 2, "maxLength": 500 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "reviewedBy": { "type": "string", "maxLength": 128 },
+        "reviewedByName": { "type": "string", "maxLength": 120 },
+        "reviewComment": { "type": "string", "maxLength": 500 },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "employeeName", "officeId", "startDate", "endDate", "leaveType", "reason", "status", "createdAt"]
+    },
+    "FieldDuty": {
+      "title": "FieldDuty",
+      "description": "Field duty request that bypasses geofence restriction on approved dates",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "startDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "endDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "location": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "reason": { "type": "string", "minLength": 2, "maxLength": 500 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "reviewedBy": { "type": "string", "maxLength": 128 },
+        "reviewedByName": { "type": "string", "maxLength": 120 },
+        "reviewComment": { "type": "string", "maxLength": 500 },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "employeeName", "officeId", "startDate", "endDate", "location", "reason", "status", "createdAt"]
+    },
+    "Holiday": {
+      "title": "Holiday",
+      "description": "Government holiday excluded from absent proposals",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "type": { "type": "string", "enum": ["government", "national", "optional"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "title", "type", "createdBy", "createdAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Monthly settled attendance report submitted by District Office to Head Office",
+      "type": "object",
+      "properties": {
+        "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "officeName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "month": { "type": "string", "pattern": "^\\d{4}-\\d{2}$" },
+        "generatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "generatedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "summary": { "type": "object" },
+        "rows": { "type": "array" }
+      },
+      "required": ["officeId", "officeName", "month", "generatedBy", "generatedByName", "submittedAt", "summary", "rows"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Append-only audit trail for settlements, status changes, and administrative actions",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "actorRole": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "officeId": { "type": "string", "maxLength": 128 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "targetCollection": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "oldValue": { "type": "string", "maxLength": 500 },
+        "newValue": { "type": "string", "maxLength": 500 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "actorName", "actorRole", "action", "targetCollection", "targetId", "reason", "timestamp"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global application settings including public registration switch",
+      "type": "object",
+      "properties": {
+        "registrationOpen": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["registrationOpen", "updatedAt", "updatedBy"]
+    }
+  },
+  "firestore": {
+    "/offices/{officeId}": {
+      "schema": { "$ref": "#/entities/Office" },
+      "description": "Office hierarchy records with geofence center, radius, and duty hours"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles, role assignments, approval status, and bound device IDs"
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/Attendance" },
+      "description": "Daily attendance documents keyed as {uid}_{yyyy-mm-dd}"
+    },
+    "/settlements/{settlementId}": {
+      "schema": { "$ref": "#/entities/Settlement" },
+      "description": "Settlement records created by District Officers"
+    },
+    "/leaves/{leaveId}": {
+      "schema": { "$ref": "#/entities/Leave" },
+      "description": "Employee leave requests and approvals"
+    },
+    "/fieldDuties/{fieldDutyId}": {
+      "schema": { "$ref": "#/entities/FieldDuty" },
+      "description": "Employee field duty requests and approvals"
+    },
+    "/holidays/{holidayId}": {
+      "schema": { "$ref": "#/entities/Holiday" },
+      "description": "Official government holidays"
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Monthly office attendance reports submitted to Head Office"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Append-only audit trail"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AppSettings" },
+      "description": "Global settings document (settings/app)"
+    }
+  }
+}

@@ -1,0 +1,71 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Adjust database ID if using (default) in your own Firebase project
+    function callerDoc() {
+      return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(request.auth.uid));
+    }
+
+    function callerExists() {
+      return isSignedIn() && firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(request.auth.uid));
+    }
+
+    function isSuperAdmin() {
+      return (isSignedIn()
+        && request.auth.token.email in ['absiddik5177@gmail.com', 'absiddik517@gmail.com']
+        && request.auth.token.email_verified == true)
+        || (callerExists()
+          && callerDoc().data.approvalStatus == 'approved'
+          && callerDoc().data.status == 'active'
+          && callerDoc().data.role == 'super_admin');
+    }
+
+    function isDistrictOfficerForUser(uid) {
+      return callerExists()
+        && callerDoc().data.approvalStatus == 'approved'
+        && callerDoc().data.status == 'active'
+        && callerDoc().data.role == 'district_officer'
+        && firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid))
+        && (
+          firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid)).data.officeId == callerDoc().data.officeId
+          || firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid)).data.districtOfficeId == callerDoc().data.officeId
+        );
+    }
+
+    // Permanent profile photos: writable only by owner or super_admin; readable by signed-in staff
+    match /profiles/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn()
+        && (fileName == request.auth.uid + '.jpg' || isSuperAdmin())
+        && request.resource != null
+        && request.resource.size <= 3 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if isSuperAdmin();
+    }
+
+    // Attendance selfies: employee can upload ONLY to own attendance/{uid}/ path;
+    // cannot read others' photos; only district_officer (for their offices) and super_admin may read or delete.
+    match /attendance/{uid}/{fileName} {
+      allow create, update: if isSignedIn()
+        && request.auth.uid == uid
+        && callerExists()
+        && callerDoc().data.approvalStatus == 'approved'
+        && callerDoc().data.status == 'active'
+        && request.resource != null
+        && request.resource.size <= 2 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg';
+
+      allow read, delete: if isSuperAdmin() || isDistrictOfficerForUser(uid);
+    }
+  }
+}

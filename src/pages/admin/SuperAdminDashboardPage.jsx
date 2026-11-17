@@ -1,0 +1,508 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  doc,
+  setDoc,
+  updateDoc,
+  serverTimestamp
+} from 'firebase/firestore';
+import AppShell from '../../components/AppShell.jsx';
+import StatusText from '../../components/StatusText.jsx';
+import ConfirmSheet from '../../components/ConfirmSheet.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { useData } from '../../context/DataContext.jsx';
+import { db, OperationType, handleFirestoreError } from '../../firebase/config.js';
+import { isDateOlderThanDays, toBanglaDigits } from '../../utils/dhakaTime.js';
+
+export default function SuperAdminDashboardPage() {
+  const {
+    profile,
+    offices,
+    registrationOpen,
+    setRegistrationOpen,
+    fetchPublicBootstrap,
+    computeDistrictOfficeId
+  } = useAuth();
+  const { deleteStoragePathSafe, logAudit } = useData();
+
+  const [loading, setLoading] = useState(true);
+  const [togglingReg, setTogglingReg] = useState(false);
+  const [cleaningPhotos, setCleaningPhotos] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
+  const [pendingUsers, setPendingUsers] = useState([]);
+  const [approvalEdits, setApprovalEdits] = useState({});
+  const [oldUnsettledPhotos, setOldUnsettledPhotos] = useState([]);
+  const [feedbackMsg, setFeedbackMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      await fetchPublicBootstrap();
+      const [uSnap, aSnap] = await Promise.all([
+        getDocs(query(collection(db, 'users'), where('approvalStatus', '==', 'pending'))),
+        getDocs(query(collection(db, 'attendance'), where('settled', '==', false), where('photoDeleted', '==', false)))
+      ]);
+
+      const users = uSnap.docs.map((d) => ({ uid: d.id, id: d.id, ...d.data() }));
+      setPendingUsers(users);
+
+      // Read fresh offices snapshot if needed for fallback default office
+      const edits = {};
+      for (const u of users) {
+        const targetUid = u.uid || u.id;
+        edits[targetUid] = {
+          officeId: u.officeId || offices[0]?.id || '',
+          role: u.role || 'employee'
+        };
+      }
+      setApprovalEdits(edits);
+
+      const oldPhotos = aSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((r) => isDateOlderThanDays(r.date, 15) && (r.checkIn?.photoPath || r.checkOut?.photoPath));
+      setOldUnsettledPhotos(oldPhotos);
+    } catch (err) {
+      setErrorMsg('অ্যাডমিন ড্যাশবোর্ড লোড করা যায়নি।');
+      handleFirestoreError(err, OperationType.LIST, 'admin-dashboard');
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchPublicBootstrap, offices]);
+
+  useEffect(() => {
+    loadDashboard();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Ensure edits default officeId if offices loaded slightly after initial pending users
+  useEffect(() => {
+    if (!offices.length || !pendingUsers.length) return;
+    setApprovalEdits((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const u of pendingUsers) {
+        const targetUid = u.uid || u.id;
+        if (next[targetUid] && !next[targetUid].officeId) {
+          next[targetUid] = { ...next[targetUid], officeId: offices[0].id };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [offices, pendingUsers]);
+
+  const toggleRegistration = async () => {
+    setTogglingReg(true);
+    setErrorMsg('');
+    setFeedbackMsg('');
+    const nextVal = !registrationOpen;
+    try {
+      await setDoc(doc(db, 'settings', 'app'), {
+        registrationOpen: nextVal,
+        updatedAt: serverTimestamp(),
+        updatedBy: profile.uid
+      });
+      setRegistrationOpen(nextVal);
+      await logAudit({
+        actor: profile,
+        action: 'REGISTRATION_SETTING_CHANGED',
+        targetCollection: 'settings',
+        targetId: 'app',
+        oldValue: String(!nextVal),
+        newValue: String(nextVal),
+        reason: nextVal ? 'Opened public registration' : 'Closed public registration'
+      });
+      setFeedbackMsg(nextVal ? 'পাবলিক রেজিস্ট্রেশন চালু করা হয়েছে।' : 'পাবলিক রেজিস্ট্রেশন বন্ধ করা হয়েছে।');
+    } catch (err) {
+      setErrorMsg('সেটিংস পরিবর্তন করা যায়নি।');
+      handleFirestoreError(err, OperationType.UPDATE, 'settings/app');
+    } finally {
+      setTogglingReg(false);
+    }
+  };
+
+  const updateEdit = (uid, patch) => {
+    setApprovalEdits((prev) => ({
+      ...prev,
+      [uid]: { ...(prev[uid] || { officeId: '', role: 'employee' }), ...patch }
+    }));
+  };
+
+  const decideUser = async (user, status) => {
+    setErrorMsg('');
+    setFeedbackMsg('');
+    const targetUid = user.uid || user.id;
+    const edit = approvalEdits[targetUid] || { officeId: '', role: 'employee' };
+    const districtOfficeId = computeDistrictOfficeId(edit.officeId);
+    try {
+      await updateDoc(doc(db, 'users', targetUid), {
+        approvalStatus: status,
+        officeId: edit.officeId,
+        districtOfficeId,
+        role: edit.role,
+        updatedAt: serverTimestamp()
+      });
+      await logAudit({
+        actor: profile,
+        action: status === 'approved' ? 'USER_APPROVED' : 'USER_REJECTED',
+        targetCollection: 'users',
+        targetId: targetUid,
+        oldValue: 'pending',
+        newValue: `${status} (${edit.role})`,
+        reason: `Super admin ${status} registration`
+      });
+      setFeedbackMsg(
+        `${user.name || user.email || targetUid}-এর অ্যাকাউন্ট ${status === 'approved' ? 'অনুমোদন' : 'বাতিল'} করা হয়েছে।`
+      );
+      await loadDashboard();
+    } catch (err) {
+      setErrorMsg('ব্যবহারকারী আপডেট করা যায়নি।');
+      handleFirestoreError(err, OperationType.UPDATE, `users/${targetUid}`);
+    }
+  };
+
+  const runPhotoCleanup = async () => {
+    setConfirmCleanup(false);
+    setCleaningPhotos(true);
+    setErrorMsg('');
+    setFeedbackMsg('');
+    try {
+      let count = 0;
+      for (const rec of oldUnsettledPhotos) {
+        if (rec.checkIn?.photoPath) {
+          await deleteStoragePathSafe(rec.checkIn.photoPath);
+        }
+        if (rec.checkOut?.photoPath) {
+          await deleteStoragePathSafe(rec.checkOut.photoPath);
+        }
+        const updatedIn = rec.checkIn ? { ...rec.checkIn, photoDeleted: true } : null;
+        const updatedOut = rec.checkOut ? { ...rec.checkOut, photoDeleted: true } : null;
+        await updateDoc(doc(db, 'attendance', rec.id), {
+          photoDeleted: true,
+          photoDeletedAt: serverTimestamp(),
+          checkIn: updatedIn,
+          checkOut: updatedOut,
+          updatedAt: serverTimestamp()
+        });
+        count++;
+      }
+
+      await logAudit({
+        actor: profile,
+        action: 'CLEANUP_15_DAY_OLD_PHOTOS',
+        targetCollection: 'attendance',
+        targetId: 'batch-cleanup',
+        oldValue: `${count} photos`,
+        newValue: 'deleted',
+        reason: '15-day old unsettled photo cleanup'
+      });
+
+      setFeedbackMsg(`${toBanglaDigits(count)}টি পুরোনো ছবি সফলভাবে মুছে ফেলা হয়েছে।`);
+      await loadDashboard();
+    } catch (err) {
+      setErrorMsg('পুরোনো ছবি মুছে ফেলতে সমস্যা হয়েছে।');
+      handleFirestoreError(err, OperationType.UPDATE, 'attendance-cleanup');
+    } finally {
+      setCleaningPhotos(false);
+    }
+  };
+
+  const seedSampleData = async () => {
+    setSeeding(true);
+    setErrorMsg('');
+    setFeedbackMsg('');
+    const uid = profile.uid;
+    try {
+      await setDoc(doc(db, 'settings', 'app'), {
+        registrationOpen: true,
+        updatedAt: serverTimestamp(),
+        updatedBy: uid
+      });
+
+      const sampleOffices = [
+        {
+          id: 'head-office',
+          name: 'Directorate of Non-Formal Education (Head Office)',
+          address: '232/1 Tejgaon Industrial Area, Dhaka 1208',
+          level: 'head',
+          parentOfficeId: null,
+          lat: 23.7654,
+          lng: 90.3995,
+          geofenceRadiusMeters: 150,
+          startTime: '09:00',
+          graceMinutes: 15,
+          endTime: '17:00'
+        },
+        {
+          id: 'dhaka-district',
+          name: 'Dhaka District Non-Formal Education Office',
+          address: 'Segunbagicha, Dhaka 1000',
+          level: 'district',
+          parentOfficeId: 'head-office',
+          lat: 23.7336,
+          lng: 90.4084,
+          geofenceRadiusMeters: 100,
+          startTime: '09:00',
+          graceMinutes: 15,
+          endTime: '17:00'
+        },
+        {
+          id: 'savar-upazila',
+          name: 'Savar Upazila Non-Formal Education Office',
+          address: 'Upazila Parishad Complex, Savar, Dhaka',
+          level: 'upazila',
+          parentOfficeId: 'dhaka-district',
+          lat: 23.8583,
+          lng: 90.2667,
+          geofenceRadiusMeters: 100,
+          startTime: '09:00',
+          graceMinutes: 15,
+          endTime: '17:00'
+        },
+        {
+          id: 'dhamrai-upazila',
+          name: 'Dhamrai Upazila Non-Formal Education Office',
+          address: 'Upazila Parishad Complex, Dhamrai, Dhaka',
+          level: 'upazila',
+          parentOfficeId: 'dhaka-district',
+          lat: 23.9136,
+          lng: 90.2141,
+          geofenceRadiusMeters: 100,
+          startTime: '09:00',
+          graceMinutes: 15,
+          endTime: '17:00'
+        }
+      ];
+
+      for (const o of sampleOffices) {
+        const { id, ...fields } = o;
+        await setDoc(doc(db, 'offices', id), {
+          ...fields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      const sampleHolidays = [
+        { id: '2026-12-16', date: '2026-12-16', title: 'Victory Day', type: 'national' },
+        { id: '2026-02-21', date: '2026-02-21', title: 'International Mother Language Day', type: 'national' },
+        { id: '2026-03-26', date: '2026-03-26', title: 'Independence Day', type: 'national' }
+      ];
+
+      for (const h of sampleHolidays) {
+        const { id, ...fields } = h;
+        await setDoc(doc(db, 'holidays', id), {
+          ...fields,
+          createdBy: uid,
+          createdAt: serverTimestamp()
+        });
+      }
+
+      await logAudit({
+        actor: profile,
+        action: 'SEED_SAMPLE_DATA',
+        targetCollection: 'offices',
+        targetId: 'initial-hierarchy',
+        newValue: '4 offices, 3 holidays',
+        reason: 'Seeded initial office hierarchy and holidays'
+      });
+
+      await loadDashboard();
+      setFeedbackMsg('নমুনা অফিস হায়ারার্কি ও ছুটির দিন সফলভাবে Firestore-এ সিড করা হয়েছে।');
+    } catch (err) {
+      setErrorMsg('নমুনা তথ্য সিড করা যায়নি।');
+      handleFirestoreError(err, OperationType.WRITE, 'seed-sample-data');
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  const banglaCount = toBanglaDigits(oldUnsettledPhotos.length);
+
+  return (
+    <AppShell>
+      <div className="space-y-5">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <section className="bg-white rounded-2xl border border-slate-200 p-5 flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 font-display">Public Employee Registration</h2>
+              <p className="text-xs text-slate-500 mt-1">
+                {registrationOpen
+                  ? 'Open: New staff can register and await approval.'
+                  : 'Closed: Register screen displays রেজিস্ট্রেশন বন্ধ আছে.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={registrationOpen}
+              disabled={togglingReg}
+              onClick={toggleRegistration}
+              className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold transition-colors shrink-0 ${
+                registrationOpen
+                  ? 'bg-emerald-700 text-white hover:bg-emerald-800'
+                  : 'bg-slate-200 text-slate-800 hover:bg-slate-300'
+              }`}
+            >
+              {togglingReg ? 'আপডেট হচ্ছে...' : registrationOpen ? 'Open (Turn Off)' : 'Closed (Turn On)'}
+            </button>
+          </section>
+
+          <section className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 font-display">
+                অনিষ্পন্ন ১৫ দিনের পুরোনো ছবি: {banglaCount} টি
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Unsettled attendance selfies older than 15 days eligible for Storage cleanup.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={cleaningPhotos || oldUnsettledPhotos.length === 0}
+              onClick={() => setConfirmCleanup(true)}
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-semibold shrink-0 disabled:opacity-50"
+            >
+              {cleaningPhotos ? 'মুছে ফেলা হচ্ছে...' : 'Delete Old Photos'}
+            </button>
+          </section>
+        </div>
+
+        <section className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 font-display">
+              Seed Bangladesh Office Hierarchy &amp; Holidays
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Seeds Head Office, District Office, two Upazila Offices, default app settings, and national holidays into Firestore.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={seeding}
+            onClick={seedSampleData}
+            className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold shrink-0 disabled:opacity-60"
+          >
+            {seeding ? 'সিড হচ্ছে...' : 'Seed Sample Offices & Holidays'}
+          </button>
+        </section>
+
+        {feedbackMsg && (
+          <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+            {feedbackMsg}
+          </div>
+        )}
+        {errorMsg && (
+          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">{errorMsg}</div>
+        )}
+
+        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
+          <div className="p-4 sm:p-5 flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-base font-bold text-slate-900 font-display">Pending Registration Approval Queue</h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Confirm office assignment and set official role before approving
+              </p>
+            </div>
+            <span className="text-xs font-semibold text-amber-700 tabular-nums">{pendingUsers.length} Pending</span>
+          </div>
+
+          {loading ? (
+            <div className="p-8 text-center text-sm text-slate-600">লোড হচ্ছে...</div>
+          ) : !pendingUsers.length ? (
+            <div className="p-8 text-center text-sm text-slate-500">
+              অনুমোদনের অপেক্ষায় কোনো নতুন রেজিস্ট্রেশন নেই।
+            </div>
+          ) : (
+            pendingUsers.map((u) => {
+              const targetUid = u.uid || u.id;
+              const edit = approvalEdits[targetUid] || { officeId: '', role: 'employee' };
+              return (
+                <div key={targetUid} className="p-4 sm:p-5 space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-bold text-slate-900">{u.name || u.email || targetUid}</div>
+                      <div className="text-xs text-slate-600">
+                        {u.designation} · {u.email} · {u.mobile}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        Joined {u.joiningDate} · Address: {u.address}
+                      </div>
+                    </div>
+                    <StatusText status="pending" />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Confirm Office</label>
+                      <select
+                        value={edit.officeId}
+                        onChange={(e) => updateEdit(targetUid, { officeId: e.target.value })}
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white"
+                      >
+                        <option value="" disabled>
+                          Select office...
+                        </option>
+                        {offices.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Assign Role</label>
+                      <select
+                        value={edit.role}
+                        onChange={(e) => updateEdit(targetUid, { role: e.target.value })}
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white"
+                      >
+                        <option value="employee">Employee</option>
+                        <option value="office_head">Office Head (Upazila)</option>
+                        <option value="district_officer">District Officer</option>
+                        <option value="head_office">Head Office (DG)</option>
+                        <option value="super_admin">Super Admin</option>
+                      </select>
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => decideUser(u, 'approved')}
+                        className="flex-1 min-h-[44px] px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => decideUser(u, 'rejected')}
+                        className="min-h-[44px] px-3 py-2 rounded-xl border border-rose-300 text-rose-700 hover:bg-rose-50 text-xs font-semibold"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </section>
+
+        <ConfirmSheet
+          open={confirmCleanup}
+          title="Delete Old Attendance Selfies"
+          message={`Are you sure you want to delete ${oldUnsettledPhotos.length} unsettled attendance selfie record(s) older than 15 days from Firebase Storage?`}
+          confirmLabel="Delete Photos"
+          danger={true}
+          onConfirm={runPhotoCleanup}
+          onCancel={() => setConfirmCleanup(false)}
+        />
+      </div>
+    </AppShell>
+  );
+}

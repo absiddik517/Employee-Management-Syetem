@@ -1,0 +1,620 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================
+    // Helper Primitives
+    // =========================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function userExists() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function callerData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isApprovedActiveUser() {
+      return userExists()
+        && callerData().approvalStatus == 'approved'
+        && callerData().status == 'active';
+    }
+
+    function isSuperAdmin() {
+      return (isSignedIn()
+        && request.auth.token.email in ['absiddik5177@gmail.com', 'absiddik517@gmail.com']
+        && request.auth.token.email_verified == true)
+        || (isApprovedActiveUser() && callerData().role == 'super_admin');
+    }
+
+    function isDistrictOfficer() {
+      return isApprovedActiveUser() && callerData().role == 'district_officer';
+    }
+
+    function isOfficeHead() {
+      return isApprovedActiveUser() && callerData().role == 'office_head';
+    }
+
+    function isHeadOffice() {
+      return isApprovedActiveUser() && callerData().role == 'head_office';
+    }
+
+    function registrationIsOpen() {
+      return !exists(/databases/$(database)/documents/settings/app)
+        || get(/databases/$(database)/documents/settings/app).data.registrationOpen == true;
+    }
+
+    function isOptString(val, maxLen) {
+      return val == null || (val is string && val.size() <= maxLen);
+    }
+
+    function isOptTimestamp(val) {
+      return val == null || val is timestamp;
+    }
+
+    function isValidDateStr(val) {
+      return val is string && val.size() == 10 && val.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function isValidTimeStr(val) {
+      return val is string && val.size() == 5 && val.matches('^([01]\\d|2[0-3]):[0-5]\\d$');
+    }
+
+    // =========================================================
+    // Validation Blueprints
+    // =========================================================
+    function isValidSettings(data) {
+      return data.keys().hasAll(['registrationOpen', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['registrationOpen', 'updatedAt', 'updatedBy'])
+        && data.registrationOpen is bool
+        && data.updatedAt is timestamp
+        && data.updatedBy is string && data.updatedBy.size() <= 128;
+    }
+
+    function isValidOffice(data) {
+      return data.keys().hasAll(['name', 'address', 'level', 'lat', 'lng', 'geofenceRadiusMeters', 'startTime', 'graceMinutes', 'endTime', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'address', 'level', 'parentOfficeId', 'lat', 'lng', 'geofenceRadiusMeters', 'startTime', 'graceMinutes', 'endTime', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 160
+        && data.address is string && data.address.size() >= 2 && data.address.size() <= 300
+        && data.level in ['head', 'district', 'upazila']
+        && (!('parentOfficeId' in data) || isOptString(data.parentOfficeId, 128))
+        && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && data.geofenceRadiusMeters is number && data.geofenceRadiusMeters >= 10 && data.geofenceRadiusMeters <= 50000
+        && isValidTimeStr(data.startTime)
+        && data.graceMinutes is number && data.graceMinutes >= 0 && data.graceMinutes <= 180
+        && isValidTimeStr(data.endTime)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['status', 'role', 'approvalStatus', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'designation', 'address', 'mobile', 'email', 'officeId', 'districtOfficeId', 'joiningDate', 'status', 'resignationDate', 'profilePhotoPath', 'role', 'approvalStatus', 'boundDeviceId', 'createdAt', 'updatedAt'])
+        && (!('uid' in data) || isOptString(data.uid, 128))
+        && (!('name' in data) || isOptString(data.name, 120))
+        && (!('designation' in data) || isOptString(data.designation, 120))
+        && (!('address' in data) || isOptString(data.address, 300))
+        && (!('mobile' in data) || isOptString(data.mobile, 30))
+        && (!('email' in data) || isOptString(data.email, 160))
+        && (!('officeId' in data) || isOptString(data.officeId, 128))
+        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && (!('joiningDate' in data) || data.joiningDate == null || data.joiningDate is timestamp || isValidDateStr(data.joiningDate))
+        && data.status in ['active', 'resigned']
+        && (!('resignationDate' in data) || data.resignationDate == null || data.resignationDate is timestamp || isValidDateStr(data.resignationDate))
+        && (!('profilePhotoPath' in data) || isOptString(data.profilePhotoPath, 300))
+        && data.role in ['employee', 'office_head', 'district_officer', 'head_office', 'super_admin']
+        && data.approvalStatus in ['pending', 'approved', 'rejected']
+        && (!('boundDeviceId' in data) || isOptString(data.boundDeviceId, 128))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isCompleteUserCreate(data) {
+      return isValidUser(data)
+        && data.keys().hasAll(['uid', 'name', 'designation', 'address', 'mobile', 'email', 'officeId', 'joiningDate', 'status', 'role', 'approvalStatus', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.designation is string && data.designation.size() >= 2 && data.designation.size() <= 120
+        && data.address is string && data.address.size() >= 2 && data.address.size() <= 300
+        && data.mobile is string && data.mobile.size() >= 6 && data.mobile.size() <= 30
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && isValidDateStr(data.joiningDate);
+    }
+
+    function isValidPunch(punch) {
+      return punch is map
+        && punch.keys().hasAll(['time', 'lat', 'lng', 'accuracy', 'distanceMeters', 'deviceId', 'photoPath', 'photoDeleted'])
+        && punch.keys().hasOnly(['time', 'lat', 'lng', 'accuracy', 'distanceMeters', 'deviceId', 'photoPath', 'photoDeleted', 'photoDeletedAt'])
+        && punch.time is timestamp
+        && punch.lat is number && punch.lat >= -90 && punch.lat <= 90
+        && punch.lng is number && punch.lng >= -180 && punch.lng <= 180
+        && punch.accuracy is number && punch.accuracy >= 0 && punch.accuracy <= 50
+        && punch.distanceMeters is number && punch.distanceMeters >= 0
+        && punch.deviceId is string && punch.deviceId.size() >= 4 && punch.deviceId.size() <= 128
+        && punch.photoPath is string && punch.photoPath.size() >= 5 && punch.photoPath.size() <= 300
+        && punch.photoDeleted is bool
+        && (!('photoDeletedAt' in punch) || isOptTimestamp(punch.photoDeletedAt));
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['uid', 'employeeName', 'officeId', 'date', 'initialStatus', 'settled', 'photoDeleted', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'employeeName', 'designation', 'officeId', 'districtOfficeId', 'date', 'isFieldDuty', 'checkIn', 'checkOut', 'initialStatus', 'finalStatus', 'settled', 'settledBy', 'settledByName', 'settledAt', 'districtComment', 'photoDeleted', 'photoDeletedAt', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.employeeName is string && data.employeeName.size() >= 1 && data.employeeName.size() <= 120
+        && (!('designation' in data) || isOptString(data.designation, 120))
+        && data.officeId is string && data.officeId.size() >= 1 && data.officeId.size() <= 128
+        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && isValidDateStr(data.date)
+        && (!('isFieldDuty' in data) || data.isFieldDuty is bool)
+        && (!('checkIn' in data) || data.checkIn == null || isValidPunch(data.checkIn))
+        && (!('checkOut' in data) || data.checkOut == null || isValidPunch(data.checkOut))
+        && data.initialStatus in ['সময়মতো', 'বিলম্বিত', 'Absent (প্রস্তাবিত)']
+        && (!('finalStatus' in data) || data.finalStatus == null || data.finalStatus in ['On Time', 'Late', 'Leave', 'Absent'])
+        && data.settled is bool
+        && (!('settledBy' in data) || isOptString(data.settledBy, 128))
+        && (!('settledByName' in data) || isOptString(data.settledByName, 120))
+        && (!('settledAt' in data) || isOptTimestamp(data.settledAt))
+        && (!('districtComment' in data) || isOptString(data.districtComment, 500))
+        && data.photoDeleted is bool
+        && (!('photoDeletedAt' in data) || isOptTimestamp(data.photoDeletedAt))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSettlement(data) {
+      return data.keys().hasAll(['attendanceId', 'employeeUid', 'employeeName', 'officeId', 'date', 'newStatus', 'settledBy', 'settledByName', 'settledAt'])
+        && data.keys().hasOnly(['attendanceId', 'employeeUid', 'employeeName', 'officeId', 'districtOfficeId', 'date', 'oldStatus', 'newStatus', 'comment', 'reason', 'settledBy', 'settledByName', 'settledAt'])
+        && data.attendanceId is string && data.attendanceId.size() >= 1 && data.attendanceId.size() <= 180
+        && data.employeeUid is string && data.employeeUid.size() >= 1 && data.employeeUid.size() <= 128
+        && data.employeeName is string && data.employeeName.size() >= 1 && data.employeeName.size() <= 120
+        && data.officeId is string && data.officeId.size() >= 1 && data.officeId.size() <= 128
+        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && isValidDateStr(data.date)
+        && (!('oldStatus' in data) || isOptString(data.oldStatus, 60))
+        && data.newStatus in ['On Time', 'Late', 'Leave', 'Absent']
+        && (!('comment' in data) || isOptString(data.comment, 500))
+        && (!('reason' in data) || isOptString(data.reason, 500))
+        && data.settledBy is string && data.settledBy.size() >= 1 && data.settledBy.size() <= 128
+        && data.settledByName is string && data.settledByName.size() >= 1 && data.settledByName.size() <= 120
+        && data.settledAt is timestamp;
+    }
+
+    function isValidLeave(data) {
+      return data.keys().hasAll(['uid', 'employeeName', 'officeId', 'startDate', 'endDate', 'leaveType', 'reason', 'status', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'employeeName', 'officeId', 'districtOfficeId', 'startDate', 'endDate', 'leaveType', 'reason', 'status', 'reviewedBy', 'reviewedByName', 'reviewComment', 'reviewedAt', 'createdAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.employeeName is string && data.employeeName.size() >= 1 && data.employeeName.size() <= 120
+        && data.officeId is string && data.officeId.size() >= 1 && data.officeId.size() <= 128
+        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && isValidDateStr(data.startDate)
+        && isValidDateStr(data.endDate)
+        && data.leaveType is string && data.leaveType.size() >= 2 && data.leaveType.size() <= 60
+        && data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 500
+        && data.status in ['pending', 'approved', 'rejected']
+        && (!('reviewedBy' in data) || isOptString(data.reviewedBy, 128))
+        && (!('reviewedByName' in data) || isOptString(data.reviewedByName, 120))
+        && (!('reviewComment' in data) || isOptString(data.reviewComment, 500))
+        && (!('reviewedAt' in data) || isOptTimestamp(data.reviewedAt))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidFieldDuty(data) {
+      return data.keys().hasAll(['uid', 'employeeName', 'officeId', 'startDate', 'endDate', 'location', 'reason', 'status', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'employeeName', 'officeId', 'districtOfficeId', 'startDate', 'endDate', 'location', 'reason', 'status', 'reviewedBy', 'reviewedByName', 'reviewComment', 'reviewedAt', 'createdAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.employeeName is string && data.employeeName.size() >= 1 && data.employeeName.size() <= 120
+        && data.officeId is string && data.officeId.size() >= 1 && data.officeId.size() <= 128
+        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && isValidDateStr(data.startDate)
+        && isValidDateStr(data.endDate)
+        && data.location is string && data.location.size() >= 2 && data.location.size() <= 200
+        && data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 500
+        && data.status in ['pending', 'approved', 'rejected']
+        && (!('reviewedBy' in data) || isOptString(data.reviewedBy, 128))
+        && (!('reviewedByName' in data) || isOptString(data.reviewedByName, 120))
+        && (!('reviewComment' in data) || isOptString(data.reviewComment, 500))
+        && (!('reviewedAt' in data) || isOptTimestamp(data.reviewedAt))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidHoliday(data) {
+      return data.keys().hasAll(['date', 'title', 'type', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['date', 'title', 'type', 'createdBy', 'createdAt'])
+        && isValidDateStr(data.date)
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 160
+        && data.type in ['government', 'national', 'optional']
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['officeId', 'officeName', 'month', 'generatedBy', 'generatedByName', 'submittedAt', 'summary', 'rows'])
+        && data.keys().hasOnly(['officeId', 'officeName', 'districtOfficeId', 'month', 'generatedBy', 'generatedByName', 'submittedAt', 'summary', 'rows'])
+        && data.officeId is string && data.officeId.size() >= 1 && data.officeId.size() <= 128
+        && data.officeName is string && data.officeName.size() >= 1 && data.officeName.size() <= 160
+        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && data.month is string && data.month.size() == 7 && data.month.matches('^\\d{4}-\\d{2}$')
+        && data.generatedBy is string && data.generatedBy.size() >= 1 && data.generatedBy.size() <= 128
+        && data.generatedByName is string && data.generatedByName.size() >= 1 && data.generatedByName.size() <= 120
+        && data.submittedAt is timestamp
+        && data.summary is map
+        && data.rows is list && data.rows.size() <= 500;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorUid', 'actorName', 'actorRole', 'action', 'targetCollection', 'targetId', 'reason', 'timestamp'])
+        && data.keys().hasOnly(['actorUid', 'actorName', 'actorRole', 'officeId', 'districtOfficeId', 'action', 'targetCollection', 'targetId', 'oldValue', 'newValue', 'reason', 'timestamp'])
+        && data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128
+        && data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120
+        && data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 40
+        && (!('officeId' in data) || isOptString(data.officeId, 128))
+        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && data.action is string && data.action.size() >= 2 && data.action.size() <= 80
+        && data.targetCollection is string && data.targetCollection.size() >= 2 && data.targetCollection.size() <= 60
+        && data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 180
+        && (!('oldValue' in data) || isOptString(data.oldValue, 500))
+        && (!('newValue' in data) || isOptString(data.newValue, 500))
+        && data.reason is string && data.reason.size() <= 500
+        && data.timestamp is timestamp;
+    }
+
+    // =========================================================
+    // Collection Rules
+    // =========================================================
+
+    // Settings: public get for registrationOpen check; super_admin writes
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && settingId == 'app';
+      allow create, update: if isValidId(settingId)
+        && settingId == 'app'
+        && isSuperAdmin()
+        && isValidSettings(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().updatedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Offices: public read (non-PII office directory for registration form & maps); super_admin writes
+    match /offices/{officeId} {
+      allow get: if isValidId(officeId);
+      allow list: if resource.data.level in ['head', 'district', 'upazila'];
+      allow create: if isValidId(officeId)
+        && isSuperAdmin()
+        && isValidOffice(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(officeId)
+        && isSuperAdmin()
+        && isValidOffice(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(officeId) && isSuperAdmin();
+    }
+
+    // Users: strict PII protection & self-registration limits
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (
+        isOwner(userId)
+        || isSuperAdmin()
+        || (isOfficeHead() && existing().officeId == callerData().officeId)
+        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid
+        || isSuperAdmin()
+        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
+        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+      );
+
+      allow create: if isValidId(userId)
+        && isSignedIn()
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isSuperAdmin()
+            && isValidUser(incoming())
+          )
+          || (
+            isOwner(userId)
+            && isCompleteUserCreate(incoming())
+            && registrationIsOpen()
+            && incoming().role == 'employee'
+            && incoming().approvalStatus == 'pending'
+            && (!('boundDeviceId' in incoming()) || incoming().boundDeviceId == null)
+          )
+        );
+
+      allow update: if isValidId(userId)
+        && isSignedIn()
+        && isValidUser(incoming())
+        && (!('uid' in existing()) || incoming().uid == existing().uid)
+        && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        && incoming().updatedAt == request.time
+        && (
+          isSuperAdmin()
+          || (
+            isOwner(userId)
+            && isApprovedActiveUser()
+            && (!('boundDeviceId' in existing()) || existing().boundDeviceId == null || existing().boundDeviceId == '')
+            && incoming().boundDeviceId is string && incoming().boundDeviceId.size() >= 4
+            && incoming().diff(existing()).affectedKeys().hasOnly(['boundDeviceId', 'updatedAt'])
+          )
+          || (
+            isOwner(userId)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['profilePhotoPath', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isValidId(userId) && isSuperAdmin();
+    }
+
+    // Attendance: keyed as {uid}_{yyyy-mm-dd}, server timestamps enforced
+    match /attendance/{attendanceId} {
+      allow get: if isValidId(attendanceId) && isSignedIn() && (
+        (resource == null && attendanceId.matches('^' + request.auth.uid + '_\\d{4}-\\d{2}-\\d{2}$'))
+        || (resource != null && (
+          existing().uid == request.auth.uid
+          || isSuperAdmin()
+          || (isOfficeHead() && existing().officeId == callerData().officeId)
+          || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+        ))
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid
+        || isSuperAdmin()
+        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
+        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+      );
+
+      allow create: if isValidId(attendanceId)
+        && isApprovedActiveUser()
+        && isValidAttendance(incoming())
+        && attendanceId == (incoming().uid + '_' + incoming().date)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/users/$(incoming().uid))
+        && exists(/databases/$(database)/documents/offices/$(incoming().officeId))
+        && (
+          // Employee daily check-in
+          (
+            isOwner(incoming().uid)
+            && incoming().checkIn != null
+            && incoming().checkIn.time == request.time
+            && callerData().boundDeviceId is string
+            && incoming().checkIn.deviceId == callerData().boundDeviceId
+            && (!('checkOut' in incoming()) || incoming().checkOut == null)
+            && incoming().settled == false
+            && (!('finalStatus' in incoming()) || incoming().finalStatus == null)
+          )
+          // District officer settling a proposed absent date
+          || (
+            isDistrictOfficer()
+            && (incoming().officeId == callerData().officeId || incoming().districtOfficeId == callerData().officeId)
+            && incoming().settled == true
+            && incoming().finalStatus in ['On Time', 'Late', 'Leave', 'Absent']
+            && incoming().settledBy == request.auth.uid
+            && incoming().settledAt == request.time
+          )
+        );
+
+      allow update: if isValidId(attendanceId)
+        && isApprovedActiveUser()
+        && isValidAttendance(incoming())
+        && incoming().uid == existing().uid
+        && incoming().officeId == existing().officeId
+        && incoming().date == existing().date
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Employee same-day check-out
+          (
+            isOwner(existing().uid)
+            && existing().checkIn != null
+            && (!('checkOut' in existing()) || existing().checkOut == null)
+            && incoming().checkOut != null
+            && incoming().checkOut.time == request.time
+            && callerData().boundDeviceId is string
+            && incoming().checkOut.deviceId == callerData().boundDeviceId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['checkOut', 'updatedAt'])
+          )
+          // District officer settlement + photoDeleted marking
+          || (
+            isDistrictOfficer()
+            && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId)
+            && incoming().settledBy == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['finalStatus', 'settled', 'settledBy', 'settledByName', 'settledAt', 'districtComment', 'photoDeleted', 'photoDeletedAt', 'checkIn', 'checkOut', 'updatedAt'])
+          )
+          // Super admin 15-day cleanup
+          || (
+            isSuperAdmin()
+            && incoming().photoDeleted == true
+            && incoming().diff(existing()).affectedKeys().hasOnly(['photoDeleted', 'photoDeletedAt', 'checkIn', 'checkOut', 'updatedAt'])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // Settlements: immutable record per settlement action
+    match /settlements/{settlementId} {
+      allow get: if isValidId(settlementId) && isSignedIn() && (
+        existing().employeeUid == request.auth.uid
+        || isSuperAdmin()
+        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.employeeUid == request.auth.uid
+        || isSuperAdmin()
+        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+      );
+
+      allow create: if isValidId(settlementId)
+        && isDistrictOfficer()
+        && isValidSettlement(incoming())
+        && (incoming().officeId == callerData().officeId || incoming().districtOfficeId == callerData().officeId)
+        && incoming().settledBy == request.auth.uid
+        && incoming().settledAt == request.time;
+
+      allow update, delete: if false;
+    }
+
+    // Leaves
+    match /leaves/{leaveId} {
+      allow get: if isValidId(leaveId) && isSignedIn() && (
+        existing().uid == request.auth.uid
+        || isSuperAdmin()
+        || (isOfficeHead() && existing().officeId == callerData().officeId)
+        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid
+        || isSuperAdmin()
+        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
+        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+      );
+
+      allow create: if isValidId(leaveId)
+        && isApprovedActiveUser()
+        && isValidLeave(incoming())
+        && isOwner(incoming().uid)
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time;
+
+      allow update: if isValidId(leaveId)
+        && isDistrictOfficer()
+        && isValidLeave(incoming())
+        && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId)
+        && existing().status == 'pending'
+        && incoming().status in ['approved', 'rejected']
+        && incoming().reviewedBy == request.auth.uid
+        && incoming().reviewedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'reviewedByName', 'reviewComment', 'reviewedAt']);
+
+      allow delete: if false;
+    }
+
+    // Field Duties
+    match /fieldDuties/{fieldDutyId} {
+      allow get: if isValidId(fieldDutyId) && isSignedIn() && (
+        existing().uid == request.auth.uid
+        || isSuperAdmin()
+        || (isOfficeHead() && existing().officeId == callerData().officeId)
+        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid
+        || isSuperAdmin()
+        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
+        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+      );
+
+      allow create: if isValidId(fieldDutyId)
+        && isApprovedActiveUser()
+        && isValidFieldDuty(incoming())
+        && isOwner(incoming().uid)
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time;
+
+      allow update: if isValidId(fieldDutyId)
+        && isDistrictOfficer()
+        && isValidFieldDuty(incoming())
+        && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId)
+        && existing().status == 'pending'
+        && incoming().status in ['approved', 'rejected']
+        && incoming().reviewedBy == request.auth.uid
+        && incoming().reviewedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'reviewedByName', 'reviewComment', 'reviewedAt']);
+
+      allow delete: if false;
+    }
+
+    // Holidays: signed-in read, super_admin manage
+    match /holidays/{holidayId} {
+      allow get: if isValidId(holidayId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.type in ['government', 'national', 'optional'];
+      allow create, update: if isValidId(holidayId)
+        && isSuperAdmin()
+        && isValidHoliday(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow delete: if isValidId(holidayId) && isSuperAdmin();
+    }
+
+    // Reports: District Officer creates, Head Office + District Officer + Super Admin read
+    match /reports/{reportId} {
+      allow get: if isValidId(reportId) && isSignedIn() && (
+        isHeadOffice()
+        || isSuperAdmin()
+        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+      );
+
+      allow list: if isSignedIn() && (
+        isHeadOffice()
+        || isSuperAdmin()
+        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+      );
+
+      allow create: if isValidId(reportId)
+        && isDistrictOfficer()
+        && isValidReport(incoming())
+        && (incoming().officeId == callerData().officeId || incoming().districtOfficeId == callerData().officeId)
+        && incoming().generatedBy == request.auth.uid
+        && incoming().submittedAt == request.time;
+
+      allow update, delete: if false;
+    }
+
+    // Audit Logs: strictly append-only
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isSignedIn() && (
+        isSuperAdmin()
+        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+      );
+
+      allow list: if isSignedIn() && (
+        isSuperAdmin()
+        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+      );
+
+      allow create: if isValidId(logId)
+        && (isApprovedActiveUser() || isSuperAdmin())
+        && isValidAuditLog(incoming())
+        && incoming().actorUid == request.auth.uid
+        && incoming().timestamp == request.time;
+
+      allow update, delete: if false;
+    }
+  }
+}
