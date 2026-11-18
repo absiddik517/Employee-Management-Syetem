@@ -8,7 +8,7 @@ service cloud.firestore {
     }
 
     // =========================================================
-    // Helper Primitives
+    // Helper Primitives & Permission Model Mirror (src/lib/permissions.js)
     // =========================================================
     function isSignedIn() {
       return request.auth != null;
@@ -44,27 +44,125 @@ service cloud.firestore {
         && callerData().status == 'active';
     }
 
-    function isSuperAdmin() {
-      return (isSignedIn()
+    function isBootstrapSuperAdmin() {
+      return isSignedIn()
         && request.auth.token.email in ['absiddik5177@gmail.com', 'absiddik517@gmail.com']
-        && request.auth.token.email_verified == true)
-        || (isApprovedActiveUser() && callerData().role == 'super_admin');
+        && request.auth.token.email_verified == true;
     }
 
-    function isDistrictOfficer() {
-      return isApprovedActiveUser() && callerData().role == 'district_officer';
+    // MIGRATION_COMPAT: legacy role mapping removed only after running scripts/migrate-roles.mjs
+    function normalizeRole(r) {
+      return r == 'head_office' ? 'director_general'
+        : (r == 'district_officer' ? 'assistant_director'
+        : (r == 'office_head' ? 'unfeo' : r));
     }
 
-    function isOfficeHead() {
-      return isApprovedActiveUser() && callerData().role == 'office_head';
+    function callerRole() {
+      return isBootstrapSuperAdmin()
+        ? 'super_admin'
+        : (isApprovedActiveUser() ? normalizeRole(callerData().role) : '');
     }
 
-    function isHeadOffice() {
-      return isApprovedActiveUser() && callerData().role == 'head_office';
+    function rankOf(r) {
+      return normalizeRole(r) == 'super_admin' ? 100
+        : (normalizeRole(r) == 'director_general' ? 90
+        : (normalizeRole(r) == 'head_office_officer' ? 80
+        : (normalizeRole(r) == 'assistant_director' ? 60
+        : (normalizeRole(r) == 'unfeo' ? 40
+        : (normalizeRole(r) == 'employee' ? 10 : 0)))));
     }
 
-    function isCallerOfficeInScope(val) {
+    // Mirrors DEFAULT_PERMISSIONS in src/lib/permissions.js
+    function defaultPermScope(perm) {
+      return perm == 'attendance.checkin'
+          ? (callerRole() in ['employee', 'unfeo', 'assistant_director', 'director_general', 'head_office_officer'] ? 'self' : '')
+        : (perm == 'attendance.view'
+          ? (callerRole() in ['super_admin', 'director_general', 'head_office_officer'] ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree'
+            : (callerRole() == 'unfeo' ? 'office'
+            : (callerRole() == 'employee' ? 'self' : ''))))
+        : (perm == 'attendance.settle'
+          ? (callerRole() == 'assistant_director' ? 'subtree' : '')
+        : (perm == 'attendance.photo.view'
+          ? (callerRole() == 'super_admin' ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree'
+            : (callerRole() == 'unfeo' ? 'office' : '')))
+        : (perm == 'attendance.photo.purge'
+          ? (callerRole() == 'super_admin' ? 'all' : '')
+        : (perm == 'leave.apply' || perm == 'fieldduty.apply'
+          ? (callerRole() in ['employee', 'unfeo', 'assistant_director', 'director_general', 'head_office_officer'] ? 'self' : '')
+        : (perm == 'leave.review'
+          ? (callerRole() == 'director_general' ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree'
+            : (callerRole() == 'unfeo' ? 'office' : '')))
+        : (perm == 'fieldduty.review'
+          ? (callerRole() == 'assistant_director' ? 'subtree' : '')
+        : (perm == 'report.create'
+          ? (callerRole() == 'assistant_director' ? 'subtree'
+            : (callerRole() == 'unfeo' ? 'office' : ''))
+        : (perm == 'report.view' || perm == 'user.view'
+          ? (callerRole() in ['super_admin', 'director_general', 'head_office_officer'] ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree'
+            : (callerRole() == 'unfeo' ? 'office' : '')))
+        : (perm == 'user.approve' || perm == 'user.resetDevice'
+          ? (callerRole() == 'super_admin' ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree'
+            : (callerRole() == 'unfeo' ? 'office' : '')))
+        : (perm == 'user.edit' || perm == 'user.role.assign'
+          ? (callerRole() == 'super_admin' ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree' : ''))
+        : (perm == 'user.delete' || perm == 'office.manage' || perm == 'holiday.manage' || perm == 'settings.manage'
+          ? (callerRole() == 'super_admin' ? 'all' : '')
+        : (perm == 'audit.view'
+          ? (callerRole() in ['super_admin', 'director_general'] ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree' : ''))
+        : '')))))))))))));
+    }
+
+    function permOverrideExists() {
+      return exists(/databases/$(database)/documents/settings/permissions);
+    }
+
+    function permOverrideData() {
+      return get(/databases/$(database)/documents/settings/permissions).data;
+    }
+
+    function hasOverrideScope(roleKey, perm) {
+      return roleKey != ''
+        && permOverrideExists()
+        && 'overrides' in permOverrideData()
+        && permOverrideData().overrides is map
+        && roleKey in permOverrideData().overrides
+        && permOverrideData().overrides[roleKey] is map
+        && perm in permOverrideData().overrides[roleKey]
+        && permOverrideData().overrides[roleKey][perm] is string;
+    }
+
+    function overrideScopeValue(roleKey, perm) {
+      return permOverrideData().overrides[roleKey][perm];
+    }
+
+    function permScope(perm) {
+      return hasOverrideScope(callerRole(), perm)
+        ? (overrideScopeValue(callerRole(), perm) == 'none' ? '' : overrideScopeValue(callerRole(), perm))
+        : defaultPermScope(perm);
+    }
+
+    function hasPerm(perm) {
+      return permScope(perm) != '';
+    }
+
+    function docOfficeId(docData) {
+      return 'officeId' in docData ? docData.officeId : '';
+    }
+
+    function docDistrictOfficeId(docData) {
+      return 'districtOfficeId' in docData ? docData.districtOfficeId : '';
+    }
+
+    function inOfficeScope(val) {
       return val is string
+        && val != ''
         && (
           val == callerData().officeId
           || (
@@ -72,6 +170,27 @@ service cloud.firestore {
             && callerData().additionalOfficeIds is list
             && val in callerData().additionalOfficeIds
           )
+        );
+    }
+
+    function inSubtreeScope(officeVal, districtVal) {
+      return inOfficeScope(officeVal) || inOfficeScope(districtVal);
+    }
+
+    function matchesDocScope(perm, uidVal, officeVal, districtVal) {
+      return permScope(perm) == 'all'
+        || (permScope(perm) == 'self' && uidVal == request.auth.uid)
+        || (permScope(perm) == 'office' && inOfficeScope(officeVal))
+        || (permScope(perm) == 'subtree' && inSubtreeScope(officeVal, districtVal));
+    }
+
+    function canReviewLeaveRole(applicantRole) {
+      return rankOf(callerRole()) > rankOf(applicantRole)
+        && (
+          hasOverrideScope(callerRole(), 'leave.review')
+          || (callerRole() == 'unfeo' && normalizeRole(applicantRole) == 'employee')
+          || (callerRole() == 'assistant_director' && normalizeRole(applicantRole) in ['employee', 'unfeo'])
+          || (callerRole() == 'director_general' && normalizeRole(applicantRole) == 'assistant_director')
         );
     }
 
@@ -105,6 +224,38 @@ service cloud.firestore {
         && data.registrationOpen is bool
         && data.updatedAt is timestamp
         && data.updatedBy is string && data.updatedBy.size() <= 128;
+    }
+
+    function isValidPermRoleMap(roleMap) {
+      return roleMap is map
+        && roleMap.keys().hasOnly([
+          'attendance.checkin', 'attendance.view', 'attendance.settle',
+          'attendance.photo.view', 'attendance.photo.purge',
+          'leave.apply', 'leave.review', 'fieldduty.apply', 'fieldduty.review',
+          'report.create', 'report.view',
+          'user.view', 'user.approve', 'user.resetDevice', 'user.edit', 'user.role.assign', 'user.delete',
+          'office.manage', 'holiday.manage', 'settings.manage', 'audit.view'
+        ])
+        && roleMap.values().hasOnly(['none', 'self', 'office', 'subtree', 'all']);
+    }
+
+    function isValidPermissionConfig(data) {
+      return data.keys().hasAll(['overrides', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['overrides', 'updatedAt', 'updatedBy', 'updatedByName'])
+        && data.overrides is map
+        && data.overrides.keys().hasOnly(['super_admin', 'director_general', 'head_office_officer', 'assistant_director', 'unfeo', 'employee'])
+        && (!('super_admin' in data.overrides) || (
+          isValidPermRoleMap(data.overrides.super_admin)
+          && (!('settings.manage' in data.overrides.super_admin) || data.overrides.super_admin['settings.manage'] == 'all')
+        ))
+        && (!('director_general' in data.overrides) || isValidPermRoleMap(data.overrides.director_general))
+        && (!('head_office_officer' in data.overrides) || isValidPermRoleMap(data.overrides.head_office_officer))
+        && (!('assistant_director' in data.overrides) || isValidPermRoleMap(data.overrides.assistant_director))
+        && (!('unfeo' in data.overrides) || isValidPermRoleMap(data.overrides.unfeo))
+        && (!('employee' in data.overrides) || isValidPermRoleMap(data.overrides.employee))
+        && data.updatedAt is timestamp
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128
+        && (!('updatedByName' in data) || isOptString(data.updatedByName, 120));
     }
 
     function isValidOffice(data) {
@@ -157,7 +308,8 @@ service cloud.firestore {
         && data.status in ['active', 'resigned']
         && (!('resignationDate' in data) || data.resignationDate == null || data.resignationDate is timestamp || isValidDateStr(data.resignationDate))
         && (!('profilePhotoPath' in data) || isOptString(data.profilePhotoPath, 300))
-        && data.role in ['employee', 'office_head', 'district_officer', 'head_office', 'super_admin']
+        // MIGRATION_COMPAT: accept legacy role strings until migration script completes
+        && data.role in ['employee', 'unfeo', 'assistant_director', 'head_office_officer', 'director_general', 'super_admin', 'office_head', 'district_officer', 'head_office']
         && data.approvalStatus in ['pending', 'approved', 'rejected']
         && (!('boundDeviceId' in data) || isOptString(data.boundDeviceId, 128))
         && (!('createdAt' in data) || data.createdAt is timestamp)
@@ -317,55 +469,59 @@ service cloud.firestore {
     // Collection Rules
     // =========================================================
 
-    // Settings: public get for registrationOpen check; super_admin writes
+    // Settings: settings/app (public registrationOpen) & settings/permissions (live role permission overrides)
     match /settings/{settingId} {
-      allow get: if isValidId(settingId) && settingId == 'app';
-      allow create, update: if isValidId(settingId)
-        && settingId == 'app'
-        && isSuperAdmin()
-        && isValidSettings(incoming())
-        && incoming().updatedAt == request.time
-        && incoming().updatedBy == request.auth.uid;
+      allow get: if isValidId(settingId) && (
+        settingId == 'app'
+        || (settingId == 'permissions' && isSignedIn())
+      );
+      allow create, update: if isValidId(settingId) && (
+        (
+          settingId == 'app'
+          && hasPerm('settings.manage')
+          && isValidSettings(incoming())
+          && incoming().updatedAt == request.time
+          && incoming().updatedBy == request.auth.uid
+        )
+        || (
+          settingId == 'permissions'
+          && callerRole() == 'super_admin'
+          && hasPerm('settings.manage')
+          && isValidPermissionConfig(incoming())
+          && incoming().updatedAt == request.time
+          && incoming().updatedBy == request.auth.uid
+        )
+      );
       allow delete: if false;
     }
 
-    // Offices: public read (non-PII office directory for registration form & maps); super_admin writes
+    // Offices: public read (non-PII office directory); office.manage writes
     match /offices/{officeId} {
       allow get: if isValidId(officeId);
       allow list: if resource.data.level in ['head', 'district', 'upazila'];
       allow create: if isValidId(officeId)
-        && isSuperAdmin()
+        && hasPerm('office.manage')
         && isValidOffice(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(officeId)
-        && isSuperAdmin()
+        && hasPerm('office.manage')
         && isValidOffice(incoming())
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time;
-      allow delete: if isValidId(officeId) && isSuperAdmin();
+      allow delete: if isValidId(officeId) && hasPerm('office.manage');
     }
 
-    // Users: strict PII protection & self-registration limits
+    // Users: strict PII protection, scoped visibility & hierarchy updates
     match /users/{userId} {
       allow get: if isValidId(userId) && isSignedIn() && (
         isOwner(userId)
-        || isSuperAdmin()
-        || (isOfficeHead() && existing().officeId == callerData().officeId)
-        || (isDistrictOfficer() && (
-          ('officeId' in existing() && isCallerOfficeInScope(existing().officeId))
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-        ))
+        || (hasPerm('user.view') && matchesDocScope('user.view', userId, docOfficeId(existing()), docDistrictOfficeId(existing())))
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
-        || isSuperAdmin()
-        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (
-          ('officeId' in resource.data && isCallerOfficeInScope(resource.data.officeId))
-          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
-        ))
+        || (hasPerm('user.view') && matchesDocScope('user.view', resource.data.uid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
       );
 
       allow create: if isValidId(userId)
@@ -375,7 +531,7 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           (
-            isSuperAdmin()
+            permScope('user.edit') == 'all'
             && isValidUser(incoming())
           )
           || (
@@ -395,7 +551,12 @@ service cloud.firestore {
         && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
         && incoming().updatedAt == request.time
         && (
-          isSuperAdmin()
+          // Super Admin (all scope) — blocked from demoting own super_admin role
+          (
+            permScope('user.edit') == 'all'
+            && !(isOwner(userId) && normalizeRole(existing().role) == 'super_admin' && normalizeRole(incoming().role) != 'super_admin')
+          )
+          // Owner first-time device binding
           || (
             isOwner(userId)
             && isApprovedActiveUser()
@@ -403,13 +564,43 @@ service cloud.firestore {
             && incoming().boundDeviceId is string && incoming().boundDeviceId.size() >= 4
             && incoming().diff(existing()).affectedKeys().hasOnly(['boundDeviceId', 'updatedAt'])
           )
+          // Owner profile photo update
           || (
             isOwner(userId)
             && incoming().diff(existing()).affectedKeys().hasOnly(['profilePhotoPath', 'updatedAt'])
           )
+          // Assistant Director (subtree scope): edit lower-rank user profile, approve, reset device, assign strictly lower role
+          || (
+            hasPerm('user.edit')
+            && permScope('user.edit') == 'subtree'
+            && userId != request.auth.uid
+            && matchesDocScope('user.edit', userId, docOfficeId(existing()), docDistrictOfficeId(existing()))
+            && matchesDocScope('user.edit', userId, docOfficeId(incoming()), docDistrictOfficeId(incoming()))
+            && rankOf(callerRole()) > rankOf(existing().role)
+            && (
+              normalizeRole(incoming().role) == normalizeRole(existing().role)
+              || (hasPerm('user.role.assign') && rankOf(callerRole()) > rankOf(incoming().role))
+            )
+            && (!('boundDeviceId' in incoming().diff(existing()).affectedKeys()) || incoming().boundDeviceId == null)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'boundDeviceId', 'name', 'designation', 'mobile', 'address', 'officeId', 'districtOfficeId', 'joiningDate', 'role', 'status', 'resignationDate', 'updatedAt'])
+          )
+          // UNFEO (office scope): approve or reset device for lower-rank staff (employee) in own office(s)
+          || (
+            hasPerm('user.approve')
+            && permScope('user.approve') == 'office'
+            && userId != request.auth.uid
+            && matchesDocScope('user.approve', userId, docOfficeId(existing()), docDistrictOfficeId(existing()))
+            && rankOf(callerRole()) > rankOf(existing().role)
+            && (!('boundDeviceId' in incoming().diff(existing()).affectedKeys()) || incoming().boundDeviceId == null)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'boundDeviceId', 'updatedAt'])
+          )
         );
 
-      allow delete: if isValidId(userId) && isSuperAdmin();
+      // Last Super Admin protection: no super_admin document can be deleted via client rules
+      allow delete: if isValidId(userId)
+        && hasPerm('user.delete')
+        && userId != request.auth.uid
+        && normalizeRole(existing().role) != 'super_admin';
     }
 
     // Attendance: keyed as {uid}_{yyyy-mm-dd}, server timestamps enforced
@@ -418,23 +609,13 @@ service cloud.firestore {
         (resource == null && attendanceId.matches('^' + request.auth.uid + '_\\d{4}-\\d{2}-\\d{2}$'))
         || (resource != null && (
           existing().uid == request.auth.uid
-          || isSuperAdmin()
-          || (isOfficeHead() && existing().officeId == callerData().officeId)
-          || (isDistrictOfficer() && (
-            isCallerOfficeInScope(existing().officeId)
-            || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-          ))
+          || (hasPerm('attendance.view') && matchesDocScope('attendance.view', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing())))
         ))
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
-        || isSuperAdmin()
-        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(resource.data.officeId)
-          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
-        ))
+        || (hasPerm('attendance.view') && matchesDocScope('attendance.view', resource.data.uid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
       );
 
       allow create: if isValidId(attendanceId)
@@ -446,9 +627,10 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/users/$(incoming().uid))
         && exists(/databases/$(database)/documents/offices/$(incoming().officeId))
         && (
-          // Employee daily check-in
+          // Self daily check-in (denied for super_admin via attendance.checkin grant)
           (
-            isOwner(incoming().uid)
+            hasPerm('attendance.checkin')
+            && isOwner(incoming().uid)
             && incoming().checkIn != null
             && incoming().checkIn.time == request.time
             && callerData().boundDeviceId is string
@@ -457,13 +639,12 @@ service cloud.firestore {
             && incoming().settled == false
             && (!('finalStatus' in incoming()) || incoming().finalStatus == null)
           )
-          // District officer settling a proposed absent date
+          // Assistant Director settling a proposed absent date (never self, strictly lower rank)
           || (
-            isDistrictOfficer()
-            && (
-              isCallerOfficeInScope(incoming().officeId)
-              || ('districtOfficeId' in incoming() && isCallerOfficeInScope(incoming().districtOfficeId))
-            )
+            hasPerm('attendance.settle')
+            && incoming().uid != request.auth.uid
+            && matchesDocScope('attendance.settle', incoming().uid, docOfficeId(incoming()), docDistrictOfficeId(incoming()))
+            && rankOf(callerRole()) > rankOf(get(/databases/$(database)/documents/users/$(incoming().uid)).data.role)
             && incoming().settled == true
             && incoming().finalStatus in ['On Time', 'Late', 'Leave', 'Absent']
             && incoming().settledBy == request.auth.uid
@@ -480,9 +661,10 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Employee same-day check-out
+          // Self same-day check-out
           (
-            isOwner(existing().uid)
+            hasPerm('attendance.checkin')
+            && isOwner(existing().uid)
             && existing().checkIn != null
             && (!('checkOut' in existing()) || existing().checkOut == null)
             && incoming().checkOut != null
@@ -491,19 +673,19 @@ service cloud.firestore {
             && incoming().checkOut.deviceId == callerData().boundDeviceId
             && incoming().diff(existing()).affectedKeys().hasOnly(['checkOut', 'updatedAt'])
           )
-          // District officer settlement + photoDeleted marking
+          // Assistant Director settlement + photoDeleted marking (never self, strictly lower rank)
           || (
-            isDistrictOfficer()
-            && (
-              isCallerOfficeInScope(existing().officeId)
-              || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-            )
+            hasPerm('attendance.settle')
+            && existing().uid != request.auth.uid
+            && matchesDocScope('attendance.settle', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing()))
+            && exists(/databases/$(database)/documents/users/$(existing().uid))
+            && rankOf(callerRole()) > rankOf(get(/databases/$(database)/documents/users/$(existing().uid)).data.role)
             && incoming().settledBy == request.auth.uid
             && incoming().diff(existing()).affectedKeys().hasOnly(['finalStatus', 'settled', 'settledBy', 'settledByName', 'settledAt', 'districtComment', 'photoDeleted', 'photoDeletedAt', 'checkIn', 'checkOut', 'updatedAt'])
           )
-          // Super admin 15-day cleanup
+          // Super Admin 15-day photo purge
           || (
-            isSuperAdmin()
+            hasPerm('attendance.photo.purge')
             && incoming().photoDeleted == true
             && incoming().diff(existing()).affectedKeys().hasOnly(['photoDeleted', 'photoDeletedAt', 'checkIn', 'checkOut', 'updatedAt'])
           )
@@ -516,71 +698,59 @@ service cloud.firestore {
     match /settlements/{settlementId} {
       allow get: if isValidId(settlementId) && isSignedIn() && (
         existing().employeeUid == request.auth.uid
-        || isSuperAdmin()
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(existing().officeId)
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-        ))
+        || (hasPerm('attendance.view') && permScope('attendance.view') == 'all')
+        || (hasPerm('attendance.settle') && matchesDocScope('attendance.settle', existing().employeeUid, docOfficeId(existing()), docDistrictOfficeId(existing())))
       );
 
       allow list: if isSignedIn() && (
         resource.data.employeeUid == request.auth.uid
-        || isSuperAdmin()
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(resource.data.officeId)
-          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
-        ))
+        || (hasPerm('attendance.view') && permScope('attendance.view') == 'all')
+        || (hasPerm('attendance.settle') && matchesDocScope('attendance.settle', resource.data.employeeUid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
       );
 
       allow create: if isValidId(settlementId)
-        && isDistrictOfficer()
+        && hasPerm('attendance.settle')
         && isValidSettlement(incoming())
-        && (
-          isCallerOfficeInScope(incoming().officeId)
-          || ('districtOfficeId' in incoming() && isCallerOfficeInScope(incoming().districtOfficeId))
-        )
+        && incoming().employeeUid != request.auth.uid
+        && matchesDocScope('attendance.settle', incoming().employeeUid, docOfficeId(incoming()), docDistrictOfficeId(incoming()))
+        && exists(/databases/$(database)/documents/users/$(incoming().employeeUid))
+        && rankOf(callerRole()) > rankOf(get(/databases/$(database)/documents/users/$(incoming().employeeUid)).data.role)
         && incoming().settledBy == request.auth.uid
         && incoming().settledAt == request.time;
 
       allow update, delete: if false;
     }
 
-    // Leaves
+    // Leaves: Approval chain (employee -> UNFEO/AD; UNFEO -> AD; AD -> DG), never self
     match /leaves/{leaveId} {
       allow get: if isValidId(leaveId) && isSignedIn() && (
         existing().uid == request.auth.uid
-        || isSuperAdmin()
-        || (isOfficeHead() && existing().officeId == callerData().officeId)
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(existing().officeId)
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-        ))
+        || (hasPerm('attendance.view') && matchesDocScope('attendance.view', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing())))
+        || (hasPerm('leave.review') && matchesDocScope('leave.review', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing())))
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
-        || isSuperAdmin()
-        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(resource.data.officeId)
-          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
-        ))
+        || (hasPerm('attendance.view') && matchesDocScope('attendance.view', resource.data.uid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
+        || (hasPerm('leave.review') && matchesDocScope('leave.review', resource.data.uid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
       );
 
       allow create: if isValidId(leaveId)
-        && isApprovedActiveUser()
+        && hasPerm('leave.apply')
         && isValidLeave(incoming())
         && isOwner(incoming().uid)
         && incoming().status == 'pending'
+        && (!('reviewedBy' in incoming()) || incoming().reviewedBy == null)
+        && (!('reviewedAt' in incoming()) || incoming().reviewedAt == null)
         && incoming().createdAt == request.time;
 
       allow update: if isValidId(leaveId)
-        && isDistrictOfficer()
+        && hasPerm('leave.review')
         && isValidLeave(incoming())
-        && (
-          isCallerOfficeInScope(existing().officeId)
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-        )
+        && matchesDocScope('leave.review', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing()))
+        && existing().uid != request.auth.uid
+        && exists(/databases/$(database)/documents/users/$(existing().uid))
+        && canReviewLeaveRole(get(/databases/$(database)/documents/users/$(existing().uid)).data.role)
         && existing().status == 'pending'
         && incoming().status in ['approved', 'rejected']
         && incoming().reviewedBy == request.auth.uid
@@ -590,41 +760,39 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Field Duties
+    // Field Duties: Reviewed strictly by higher-rank reviewer with fieldduty.review (never self)
     match /fieldDuties/{fieldDutyId} {
       allow get: if isValidId(fieldDutyId) && isSignedIn() && (
         existing().uid == request.auth.uid
-        || isSuperAdmin()
-        || (isOfficeHead() && existing().officeId == callerData().officeId)
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(existing().officeId)
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-        ))
+        || (hasPerm('attendance.view') && matchesDocScope('attendance.view', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing())))
+        || (hasPerm('fieldduty.review') && matchesDocScope('fieldduty.review', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing())))
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
-        || isSuperAdmin()
-        || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(resource.data.officeId)
-          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
-        ))
+        || (hasPerm('attendance.view') && matchesDocScope('attendance.view', resource.data.uid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
+        || (hasPerm('fieldduty.review') && matchesDocScope('fieldduty.review', resource.data.uid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
       );
 
       allow create: if isValidId(fieldDutyId)
-        && isApprovedActiveUser()
+        && hasPerm('fieldduty.apply')
         && isValidFieldDuty(incoming())
         && isOwner(incoming().uid)
         && incoming().status == 'pending'
+        && (!('reviewedBy' in incoming()) || incoming().reviewedBy == null)
+        && (!('reviewedAt' in incoming()) || incoming().reviewedAt == null)
         && incoming().createdAt == request.time;
 
       allow update: if isValidId(fieldDutyId)
-        && isDistrictOfficer()
+        && hasPerm('fieldduty.review')
         && isValidFieldDuty(incoming())
+        && matchesDocScope('fieldduty.review', existing().uid, docOfficeId(existing()), docDistrictOfficeId(existing()))
+        && existing().uid != request.auth.uid
+        && exists(/databases/$(database)/documents/users/$(existing().uid))
+        && rankOf(callerRole()) > rankOf(get(/databases/$(database)/documents/users/$(existing().uid)).data.role)
         && (
-          isCallerOfficeInScope(existing().officeId)
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+          hasOverrideScope(callerRole(), 'fieldduty.review')
+          || normalizeRole(get(/databases/$(database)/documents/users/$(existing().uid)).data.role) in ['employee', 'unfeo']
         )
         && existing().status == 'pending'
         && incoming().status in ['approved', 'rejected']
@@ -635,71 +803,52 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Holidays: signed-in read, super_admin manage
+    // Holidays: signed-in read, holiday.manage writes
     match /holidays/{holidayId} {
       allow get: if isValidId(holidayId) && isSignedIn();
       allow list: if isSignedIn() && resource.data.type in ['government', 'national', 'optional'];
       allow create, update: if isValidId(holidayId)
-        && isSuperAdmin()
+        && hasPerm('holiday.manage')
         && isValidHoliday(incoming())
         && incoming().createdBy == request.auth.uid
         && incoming().createdAt == request.time;
-      allow delete: if isValidId(holidayId) && isSuperAdmin();
+      allow delete: if isValidId(holidayId) && hasPerm('holiday.manage');
     }
 
-    // Reports: District Officer creates, Head Office + District Officer + Super Admin read
+    // Reports: report.create (UNFEO office / AD subtree), report.view (UNFEO/AD/HO/DG/SuperAdmin)
     match /reports/{reportId} {
-      allow get: if isValidId(reportId) && isSignedIn() && (
-        isHeadOffice()
-        || isSuperAdmin()
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(existing().officeId)
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-        ))
-      );
+      allow get: if isValidId(reportId)
+        && isSignedIn()
+        && hasPerm('report.view')
+        && matchesDocScope('report.view', '', docOfficeId(existing()), docDistrictOfficeId(existing()));
 
-      allow list: if isSignedIn() && (
-        isHeadOffice()
-        || isSuperAdmin()
-        || (isDistrictOfficer() && (
-          isCallerOfficeInScope(resource.data.officeId)
-          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
-        ))
-      );
+      allow list: if isSignedIn()
+        && hasPerm('report.view')
+        && matchesDocScope('report.view', '', docOfficeId(resource.data), docDistrictOfficeId(resource.data));
 
       allow create: if isValidId(reportId)
-        && isDistrictOfficer()
+        && hasPerm('report.create')
         && isValidReport(incoming())
-        && (
-          isCallerOfficeInScope(incoming().officeId)
-          || ('districtOfficeId' in incoming() && isCallerOfficeInScope(incoming().districtOfficeId))
-        )
+        && matchesDocScope('report.create', '', docOfficeId(incoming()), docDistrictOfficeId(incoming()))
         && incoming().generatedBy == request.auth.uid
         && incoming().submittedAt == request.time;
 
       allow update, delete: if false;
     }
 
-    // Audit Logs: strictly append-only
+    // Audit Logs: strictly append-only; readable per audit.view (SuperAdmin all, DG all, AD subtree)
     match /auditLogs/{logId} {
-      allow get: if isValidId(logId) && isSignedIn() && (
-        isSuperAdmin()
-        || (isDistrictOfficer() && (
-          ('officeId' in existing() && isCallerOfficeInScope(existing().officeId))
-          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
-        ))
-      );
+      allow get: if isValidId(logId)
+        && isSignedIn()
+        && hasPerm('audit.view')
+        && matchesDocScope('audit.view', '', docOfficeId(existing()), docDistrictOfficeId(existing()));
 
-      allow list: if isSignedIn() && (
-        isSuperAdmin()
-        || (isDistrictOfficer() && (
-          ('officeId' in resource.data && isCallerOfficeInScope(resource.data.officeId))
-          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
-        ))
-      );
+      allow list: if isSignedIn()
+        && hasPerm('audit.view')
+        && matchesDocScope('audit.view', '', docOfficeId(resource.data), docDistrictOfficeId(resource.data));
 
       allow create: if isValidId(logId)
-        && (isApprovedActiveUser() || isSuperAdmin())
+        && (isApprovedActiveUser() || isBootstrapSuperAdmin())
         && isValidAuditLog(incoming())
         && incoming().actorUid == request.auth.uid
         && incoming().timestamp == request.time;

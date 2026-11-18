@@ -19,7 +19,7 @@ import { db, OperationType, handleFirestoreError } from '../../firebase/config.j
 import { getTodayDhaka, formatDhakaTime, isWeekendDhaka } from '../../utils/dhakaTime.js';
 
 export default function DistrictSettlementPage() {
-  const { profile, offices, activeOfficeId, activeOffice, activeChargeType } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, canReview } = useAuth();
   const { resolveStorageUrl, deleteStoragePathSafe, logAudit } = useData();
 
   const [loading, setLoading] = useState(true);
@@ -65,9 +65,32 @@ export default function DistrictSettlementPage() {
     [offices, myOfficeId]
   );
 
+  const staffByUid = useMemo(() => {
+    const map = new Map();
+    for (const s of staffList) map.set(s.uid, s);
+    return map;
+  }, [staffList]);
+
   const officeName = useCallback(
     (id) => offices.find((o) => o.id === id)?.name || id,
     [offices]
+  );
+
+  const canSettleItem = useCallback(
+    (item) => {
+      if (!item) return false;
+      const staff = staffByUid.get(item.uid);
+      return canReview(
+        {
+          uid: item.uid,
+          officeId: item.officeId,
+          districtOfficeId: item.districtOfficeId,
+          role: staff?.role || item.role || null
+        },
+        'attendance'
+      );
+    },
+    [staffByUid, canReview]
   );
 
   const loadData = useCallback(async (dateOverride = filters.date) => {
@@ -148,6 +171,7 @@ export default function DistrictSettlementPage() {
           key: `proposed_${emp.uid}_${dateStr}`,
           id: `${emp.uid}_${dateStr}`,
           uid: emp.uid,
+          role: emp.role,
           employeeName: emp.name || emp.email || emp.uid,
           designation: emp.designation,
           officeId: emp.officeId,
@@ -185,15 +209,18 @@ export default function DistrictSettlementPage() {
     return offices.find((o) => o.id === activeItem.officeId) || null;
   }, [activeItem, offices]);
 
+  const activeItemSettleable = useMemo(() => canSettleItem(activeItem), [activeItem, canSettleItem]);
+
   const requiresReason = !!(
     activeItem &&
     activeItem.settled &&
     settleForm.finalStatus !== activeItem.finalStatus
   );
 
-  const toggleSelect = (key) => {
+  const toggleSelect = (item) => {
+    if (!canSettleItem(item)) return;
     setSelectedIds((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+      prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key]
     );
   };
 
@@ -209,18 +236,23 @@ export default function DistrictSettlementPage() {
     });
     setDetailUrls({ profile: '', checkIn: '', checkOut: '' });
 
-    const staff = staffList.find((s) => s.uid === item.uid);
+    const staff = staffByUid.get(item.uid);
     const profilePath = staff?.profilePhotoPath || item.profilePhotoPath || '';
+    const canSeeSelfie = can('attendance.photo.view', item);
 
     const [profileUrl, checkInUrl, checkOutUrl] = await Promise.all([
       profilePath ? resolveStorageUrl(profilePath) : Promise.resolve(''),
-      !item.photoDeleted && item.checkIn?.photoPath ? resolveStorageUrl(item.checkIn.photoPath) : Promise.resolve(''),
-      !item.photoDeleted && item.checkOut?.photoPath ? resolveStorageUrl(item.checkOut.photoPath) : Promise.resolve('')
+      canSeeSelfie && !item.photoDeleted && item.checkIn?.photoPath ? resolveStorageUrl(item.checkIn.photoPath) : Promise.resolve(''),
+      canSeeSelfie && !item.photoDeleted && item.checkOut?.photoPath ? resolveStorageUrl(item.checkOut.photoPath) : Promise.resolve('')
     ]);
     setDetailUrls({ profile: profileUrl, checkIn: checkInUrl, checkOut: checkOutUrl });
   };
 
   const settleSingleItem = async (item, finalStatus, comment, reason = '') => {
+    if (!canSettleItem(item)) {
+      throw new Error('নিজের বা সমপর্যায়ের/ঊর্ধ্বতন কর্মকর্তার হাজিরা নিষ্পত্তি অনুমোদিত নয়।');
+    }
+
     const officer = profile;
     const oldStatus = item.finalStatus || item.initialStatus;
 
@@ -306,7 +338,7 @@ export default function DistrictSettlementPage() {
 
   const saveSettlement = async (e) => {
     e.preventDefault();
-    if (!activeItem) return;
+    if (!activeItem || !activeItemSettleable) return;
     setDetailError('');
     if (requiresReason && !settleForm.reason.trim()) {
       setDetailError('নিষ্পত্তিকৃত স্ট্যাটাস পরিবর্তন করতে কারণ উল্লেখ করা বাধ্যতামূলক।');
@@ -336,7 +368,7 @@ export default function DistrictSettlementPage() {
     setErrorMsg('');
     setFeedbackMsg('');
     try {
-      const targets = filteredItems.filter((i) => selectedIds.includes(i.key));
+      const targets = filteredItems.filter((i) => selectedIds.includes(i.key) && canSettleItem(i));
       for (const item of targets) {
         await settleSingleItem(item, 'On Time', 'Bulk settled as On Time', 'Bulk On Time settlement');
       }
@@ -350,29 +382,31 @@ export default function DistrictSettlementPage() {
   };
 
   return (
-    <AppShell>
+    <AppShell showThemeToggle>
       <div className="space-y-4">
-        <section className="bg-white rounded-2xl border border-slate-200 p-4 space-y-4">
+        <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-base font-bold text-slate-900 font-display">Attendance Settlement (নিষ্পত্তি)</h2>
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">
+                  Attendance Settlement (নিষ্পত্তি)
+                </h2>
                 {activeOffice && (
                   <span
                     className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
                       activeChargeType === 'additional'
-                        ? 'bg-amber-100 text-amber-800'
-                        : 'bg-emerald-100 text-emerald-800'
+                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                        : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
                     }`}
                   >
                     {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'} · {activeOffice.name}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Unsettled in view: <span className="font-bold text-rose-700 tabular-nums">{unsettledCount}</span>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Unsettled in view: <span className="font-bold text-rose-700 dark:text-rose-400 tabular-nums">{unsettledCount}</span>
                 <span aria-hidden="true"> · </span>
-                Total listed: <span className="font-semibold text-slate-700 tabular-nums">{filteredItems.length}</span>
+                Total listed: <span className="font-semibold text-slate-700 dark:text-slate-300 tabular-nums">{filteredItems.length}</span>
               </p>
             </div>
 
@@ -381,7 +415,7 @@ export default function DistrictSettlementPage() {
                 type="button"
                 disabled={bulkSaving}
                 onClick={bulkSetOnTime}
-                className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-60"
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] text-white text-xs font-semibold disabled:opacity-60"
               >
                 {bulkSaving ? 'সংরক্ষণ হচ্ছে...' : `Set ${selectedIds.length} as On Time`}
               </button>
@@ -390,11 +424,11 @@ export default function DistrictSettlementPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Office</label>
+              <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Office</label>
               <select
                 value={filters.officeId}
                 onChange={(e) => setFilters((f) => ({ ...f, officeId: e.target.value }))}
-                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white"
+                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-base sm:text-xs bg-white dark:bg-slate-950"
               >
                 <option value="all">All District &amp; Upazila Offices</option>
                 {managedOffices.map((o) => (
@@ -406,21 +440,25 @@ export default function DistrictSettlementPage() {
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Date (Asia/Dhaka)</label>
+              <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                Date (Asia/Dhaka)
+              </label>
               <input
                 value={filters.date}
                 onChange={(e) => setFilters((f) => ({ ...f, date: e.target.value }))}
                 type="date"
-                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono-tabular bg-white"
+                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-base sm:text-xs font-mono-tabular bg-white dark:bg-slate-950"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Initial Status</label>
+              <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                Initial Status
+              </label>
               <select
                 value={filters.initialStatus}
                 onChange={(e) => setFilters((f) => ({ ...f, initialStatus: e.target.value }))}
-                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white"
+                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-base sm:text-xs bg-white dark:bg-slate-950"
               >
                 <option value="all">All Statuses</option>
                 <option value="সময়মতো">সময়মতো</option>
@@ -430,12 +468,12 @@ export default function DistrictSettlementPage() {
             </div>
 
             <div className="flex items-end">
-              <label className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+              <label className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70 flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer">
                 <input
                   checked={filters.unsettledOnly}
                   onChange={(e) => setFilters((f) => ({ ...f, unsettledOnly: e.target.checked }))}
                   type="checkbox"
-                  className="w-4 h-4 accent-emerald-700"
+                  className="w-4 h-4 accent-[#0b6b4f]"
                 />
                 <span>Unsettled only</span>
               </label>
@@ -444,64 +482,77 @@ export default function DistrictSettlementPage() {
         </section>
 
         {feedbackMsg && (
-          <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-200">
             {feedbackMsg}
           </div>
         )}
         {errorMsg && (
-          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">{errorMsg}</div>
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200">
+            {errorMsg}
+          </div>
         )}
 
         {loading ? (
-          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-sm text-slate-600">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center text-sm text-slate-600 dark:text-slate-300">
             লোড হচ্ছে...
           </div>
         ) : !filteredItems.length ? (
-          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-sm text-slate-500">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center text-sm text-slate-500 dark:text-slate-400">
             নির্বাচিত ফিল্টারে কোনো রেকর্ড বা প্রস্তাবিত অনুপস্থিতি পাওয়া যায়নি।
           </div>
         ) : (
-          <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
-            {filteredItems.map((item) => (
-              <div key={item.key} className="p-4 flex items-center gap-3 hover:bg-slate-50/70 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(item.key)}
-                  onChange={() => toggleSelect(item.key)}
-                  className="w-5 h-5 accent-emerald-700 shrink-0"
-                  aria-label={`Select ${item.employeeName}`}
-                />
-
-                <button
-                  type="button"
-                  onClick={() => openDetail(item)}
-                  className="flex-1 min-w-0 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
+            {filteredItems.map((item) => {
+              const settleable = canSettleItem(item);
+              return (
+                <div
+                  key={item.key}
+                  className="p-4 flex items-center gap-3 hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
                 >
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-slate-900 truncate">{item.employeeName}</div>
-                    <div className="text-xs text-slate-500 truncate">
-                      {officeName(item.officeId)} · {item.designation || 'Staff'}
-                    </div>
-                    <div className="text-[11px] font-mono-tabular text-slate-500 mt-0.5">
-                      {!item.isProposedAbsent ? (
-                        <>
-                          In: {item.checkIn ? formatDhakaTime(item.checkIn.time) : '—'} · Out:{' '}
-                          {item.checkOut ? formatDhakaTime(item.checkOut.time) : '—'}
-                          {item.photoDeleted && <span> · ছবি মুছে গেছে</span>}
-                        </>
-                      ) : (
-                        <>No check-in recorded on {item.date}</>
-                      )}
-                    </div>
-                  </div>
+                  <input
+                    type="checkbox"
+                    disabled={!settleable}
+                    checked={selectedIds.includes(item.key)}
+                    onChange={() => toggleSelect(item)}
+                    className="w-5 h-5 accent-[#0b6b4f] shrink-0 disabled:opacity-30"
+                    aria-label={`Select ${item.employeeName}`}
+                  />
 
-                  <div className="flex flex-col sm:items-end gap-0.5 shrink-0">
-                    <StatusText status={item.finalStatus || item.initialStatus} />
-                    <span className="text-[11px] text-slate-400">{item.settled ? 'Settled' : 'Unsettled'}</span>
-                  </div>
-                </button>
-              </div>
-            ))}
+                  <button
+                    type="button"
+                    onClick={() => openDetail(item)}
+                    className="flex-1 min-w-0 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                        {item.employeeName}
+                      </div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                        {officeName(item.officeId)} · {item.designation || 'Staff'}
+                      </div>
+                      <div className="text-[11px] font-mono-tabular text-slate-500 dark:text-slate-400 mt-0.5">
+                        {!item.isProposedAbsent ? (
+                          <>
+                            In: {item.checkIn ? formatDhakaTime(item.checkIn.time) : '—'} · Out:{' '}
+                            {item.checkOut ? formatDhakaTime(item.checkOut.time) : '—'}
+                            {item.photoDeleted && <span> · ছবি মুছে গেছে</span>}
+                          </>
+                        ) : (
+                          <>No check-in recorded on {item.date}</>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:items-end gap-0.5 shrink-0">
+                      <StatusText status={item.finalStatus || item.initialStatus} />
+                      <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                        {!settleable ? 'Read-only' : item.settled ? 'Settled' : 'Unsettled'}
+                      </span>
+                    </div>
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -512,27 +563,31 @@ export default function DistrictSettlementPage() {
               if (e.target === e.currentTarget) setActiveItem(null);
             }}
           >
-            <div className="w-full sm:max-w-2xl max-h-[92vh] overflow-y-auto bg-white rounded-t-3xl sm:rounded-2xl p-5 sm:p-6 space-y-5 shadow-xl">
+            <div className="w-full sm:max-w-2xl max-h-[92vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-5 shadow-xl">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-lg font-bold text-slate-900 font-display">{activeItem.employeeName}</h3>
-                  <p className="text-xs text-slate-500">
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 font-display">
+                    {activeItem.employeeName}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
                     {officeName(activeItem.officeId)} · {activeItem.date}
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setActiveItem(null)}
-                  className="min-h-[44px] px-3 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                  className="min-h-[44px] px-3 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
                 >
                   Close
                 </button>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div className="bg-slate-50 rounded-xl p-3 space-y-2">
-                  <div className="text-xs font-semibold text-slate-700">Permanent Profile Photo</div>
-                  <div className="aspect-square rounded-lg bg-slate-200 overflow-hidden flex items-center justify-center">
+                <div className="bg-slate-50 dark:bg-slate-800/70 rounded-xl p-3 space-y-2">
+                  <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Permanent Profile Photo
+                  </div>
+                  <div className="aspect-square rounded-lg bg-slate-200 dark:bg-slate-800 overflow-hidden flex items-center justify-center">
                     {detailUrls.profile ? (
                       <img
                         src={detailUrls.profile}
@@ -545,11 +600,13 @@ export default function DistrictSettlementPage() {
                   </div>
                 </div>
 
-                <div className="bg-slate-50 rounded-xl p-3 space-y-2">
-                  <div className="text-xs font-semibold text-slate-700">Check-In Selfie</div>
-                  <div className="aspect-square rounded-lg bg-slate-200 overflow-hidden flex items-center justify-center">
+                <div className="bg-slate-50 dark:bg-slate-800/70 rounded-xl p-3 space-y-2">
+                  <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">Check-In Selfie</div>
+                  <div className="aspect-square rounded-lg bg-slate-200 dark:bg-slate-800 overflow-hidden flex items-center justify-center">
                     {activeItem.photoDeleted ? (
-                      <span className="text-xs font-semibold text-rose-700 px-2 text-center">ছবি মুছে গেছে</span>
+                      <span className="text-xs font-semibold text-rose-700 dark:text-rose-400 px-2 text-center">
+                        ছবি মুছে গেছে
+                      </span>
                     ) : detailUrls.checkIn ? (
                       <img
                         src={detailUrls.checkIn}
@@ -566,8 +623,8 @@ export default function DistrictSettlementPage() {
               </div>
 
               {!activeItem.isProposedAbsent && detailUrls.checkOut && !activeItem.photoDeleted && (
-                <div className="bg-slate-50 rounded-xl p-3 space-y-2">
-                  <div className="text-xs font-semibold text-slate-700">Check-Out Selfie</div>
+                <div className="bg-slate-50 dark:bg-slate-800/70 rounded-xl p-3 space-y-2">
+                  <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">Check-Out Selfie</div>
                   <img
                     src={detailUrls.checkOut}
                     alt="Attendance check-out selfie"
@@ -579,16 +636,16 @@ export default function DistrictSettlementPage() {
               {!activeItem.isProposedAbsent && (
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-3 text-xs">
-                    <div className="p-3 rounded-xl bg-slate-50">
-                      <div className="text-slate-500">Check-In Time &amp; Accuracy</div>
-                      <div className="font-mono-tabular font-semibold text-slate-900 mt-1">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
+                      <div className="text-slate-500 dark:text-slate-400">Check-In Time &amp; Accuracy</div>
+                      <div className="font-mono-tabular font-semibold text-slate-900 dark:text-slate-100 mt-1">
                         {activeItem.checkIn ? formatDhakaTime(activeItem.checkIn.time) : '—'}
                         {activeItem.checkIn && <span> · ±{activeItem.checkIn.accuracy}m</span>}
                       </div>
                     </div>
-                    <div className="p-3 rounded-xl bg-slate-50">
-                      <div className="text-slate-500">Check-Out Time &amp; Accuracy</div>
-                      <div className="font-mono-tabular font-semibold text-slate-900 mt-1">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
+                      <div className="text-slate-500 dark:text-slate-400">Check-Out Time &amp; Accuracy</div>
+                      <div className="font-mono-tabular font-semibold text-slate-900 dark:text-slate-100 mt-1">
                         {activeItem.checkOut ? formatDhakaTime(activeItem.checkOut.time) : '—'}
                         {activeItem.checkOut && <span> · ±{activeItem.checkOut.accuracy}m</span>}
                       </div>
@@ -609,65 +666,75 @@ export default function DistrictSettlementPage() {
                 </div>
               )}
 
-              <form onSubmit={saveSettlement} className="space-y-4 pt-2 border-t border-slate-100">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Final Status</label>
-                    <select
-                      value={settleForm.finalStatus}
-                      onChange={(e) => setSettleForm((s) => ({ ...s, finalStatus: e.target.value }))}
-                      required
-                      className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-sm bg-white"
-                    >
-                      <option value="On Time">On Time</option>
-                      <option value="Late">Late</option>
-                      <option value="Leave">Leave</option>
-                      <option value="Absent">Absent</option>
-                    </select>
+              {activeItemSettleable ? (
+                <form onSubmit={saveSettlement} className="space-y-4 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Final Status
+                      </label>
+                      <select
+                        value={settleForm.finalStatus}
+                        onChange={(e) => setSettleForm((s) => ({ ...s, finalStatus: e.target.value }))}
+                        required
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-base sm:text-sm bg-white dark:bg-slate-950"
+                      >
+                        <option value="On Time">On Time</option>
+                        <option value="Late">Late</option>
+                        <option value="Leave">Leave</option>
+                        <option value="Absent">Absent</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        District Comment
+                      </label>
+                      <input
+                        value={settleForm.comment}
+                        onChange={(e) => setSettleForm((s) => ({ ...s, comment: e.target.value }))}
+                        type="text"
+                        placeholder="Optional note for employee..."
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-base sm:text-sm"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">District Comment</label>
-                    <input
-                      value={settleForm.comment}
-                      onChange={(e) => setSettleForm((s) => ({ ...s, comment: e.target.value }))}
-                      type="text"
-                      placeholder="Optional note for employee..."
-                      className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-sm"
-                    />
-                  </div>
+
+                  {requiresReason && (
+                    <div>
+                      <label className="block text-xs font-semibold text-rose-700 dark:text-rose-400 mb-1">
+                        Reason for Changing Settled Status (Required)
+                      </label>
+                      <input
+                        value={settleForm.reason}
+                        onChange={(e) => setSettleForm((s) => ({ ...s, reason: e.target.value }))}
+                        type="text"
+                        required
+                        minLength={3}
+                        placeholder="Explain why the settled status is being changed..."
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-slate-950 text-base sm:text-sm"
+                      />
+                    </div>
+                  )}
+
+                  {detailError && (
+                    <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200">
+                      {detailError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={detailSaving}
+                    className="w-full min-h-[48px] px-5 py-3 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] text-white text-sm font-semibold disabled:opacity-60"
+                  >
+                    {detailSaving ? 'সংরক্ষণ হচ্ছে...' : 'Save Settlement & Delete Selfie'}
+                  </button>
+                </form>
+              ) : (
+                <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200">
+                  নিজের বা সমপর্যায়ের/ঊর্ধ্বতন কর্মকর্তার হাজিরা নিষ্পত্তি করা অনুমোদিত নয়।
                 </div>
-
-                {requiresReason && (
-                  <div>
-                    <label className="block text-xs font-semibold text-rose-700 mb-1">
-                      Reason for Changing Settled Status (Required)
-                    </label>
-                    <input
-                      value={settleForm.reason}
-                      onChange={(e) => setSettleForm((s) => ({ ...s, reason: e.target.value }))}
-                      type="text"
-                      required
-                      minLength={3}
-                      placeholder="Explain why the settled status is being changed..."
-                      className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-rose-300 text-sm"
-                    />
-                  </div>
-                )}
-
-                {detailError && (
-                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">
-                    {detailError}
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={detailSaving}
-                  className="w-full min-h-[48px] px-5 py-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold disabled:opacity-60"
-                >
-                  {detailSaving ? 'সংরক্ষণ হচ্ছে...' : 'Save Settlement & Delete Selfie'}
-                </button>
-              </form>
+              )}
             </div>
           </div>
         )}

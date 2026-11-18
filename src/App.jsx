@@ -25,6 +25,8 @@ import AdminOfficesPage from './pages/admin/AdminOfficesPage.jsx';
 import AdminUsersPage from './pages/admin/AdminUsersPage.jsx';
 import AdminHolidaysPage from './pages/admin/AdminHolidaysPage.jsx';
 import AdminAdditionalChargePage from './pages/admin/AdminAdditionalChargePage.jsx';
+import AdminRolePermissionsPage from './pages/admin/AdminRolePermissionsPage.jsx';
+import AuditLogPage from './pages/AuditLogPage.jsx';
 
 function GuestRoute({ children }) {
   const { isAuthenticated, firebaseUser, needsProfileSetup, profile, getRoleHomePath } = useAuth();
@@ -48,13 +50,23 @@ function MissingProfileRoute({ children }) {
   return children;
 }
 
-function ProtectedRoute({ roles, allowPending = false, requireActiveOffice = false, children }) {
+function ProtectedRoute({
+  permission,
+  permissions,
+  requiredScope,
+  requireMultiOffice = false,
+  allowPending = false,
+  requireActiveOffice = false,
+  children
+}) {
   const {
     isAuthenticated,
     firebaseUser,
     needsProfileSetup,
     isApproved,
     profile,
+    can,
+    permissionScope,
     hasMultipleOffices,
     activeOfficeId,
     getRoleHomePath
@@ -73,12 +85,35 @@ function ProtectedRoute({ roles, allowPending = false, requireActiveOffice = fal
   if (allowPending && isApproved) {
     return <Navigate to={getRoleHomePath(profile)} replace />;
   }
-  if (roles && !roles.includes(profile.role)) {
-    return <Navigate to={getRoleHomePath(profile)} replace />;
+
+  let permitted = true;
+  if (permission) {
+    permitted = can(permission);
+    if (permitted && requiredScope && permissionScope(permission) !== requiredScope) {
+      permitted = false;
+    }
+  } else if (Array.isArray(permissions) && permissions.length > 0) {
+    permitted = permissions.some((p) => can(p));
   }
-  if (requireActiveOffice && profile.role === 'district_officer' && hasMultipleOffices && !activeOfficeId) {
+
+  if (requireMultiOffice && !hasMultipleOffices) {
+    permitted = false;
+  }
+
+  if (!permitted) {
+    return (
+      <Navigate
+        to={getRoleHomePath(profile)}
+        replace
+        state={{ unauthorizedToast: 'এই পৃষ্ঠাটি দেখার অনুমতি আপনার অ্যাকাউন্টে নেই।' }}
+      />
+    );
+  }
+
+  if (requireActiveOffice && hasMultipleOffices && !activeOfficeId) {
     return <Navigate to="/select-office" replace />;
   }
+
   return children;
 }
 
@@ -87,8 +122,8 @@ export default function App() {
 
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
-        <div className="text-sm font-medium text-slate-600">লোড হচ্ছে...</div>
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-6">
+        <div className="text-sm font-medium text-slate-600 dark:text-slate-300">লোড হচ্ছে...</div>
       </div>
     );
   }
@@ -130,11 +165,11 @@ export default function App() {
           }
         />
 
-        {/* Employee */}
+        {/* Self Attendance & Leave / Field Duty Applications (all non-technical roles) */}
         <Route
           path="/employee"
           element={
-            <ProtectedRoute roles={['employee']}>
+            <ProtectedRoute permission="attendance.checkin">
               <EmployeeHomePage />
             </ProtectedRoute>
           }
@@ -142,7 +177,7 @@ export default function App() {
         <Route
           path="/employee/history"
           element={
-            <ProtectedRoute roles={['employee']}>
+            <ProtectedRoute permission="attendance.checkin">
               <EmployeeHistoryPage />
             </ProtectedRoute>
           }
@@ -150,36 +185,37 @@ export default function App() {
         <Route
           path="/employee/requests"
           element={
-            <ProtectedRoute roles={['employee']}>
+            <ProtectedRoute permissions={['leave.apply', 'fieldduty.apply']}>
               <EmployeeRequestsPage />
             </ProtectedRoute>
           }
         />
 
-        {/* Office Head (Upazila - View Only) */}
-        <Route
-          path="/office-head"
-          element={
-            <ProtectedRoute roles={['office_head']}>
-              <OfficeHeadPage />
-            </ProtectedRoute>
-          }
-        />
-
+        {/* Multi-Office Selection (Assistant Director & UNFEO with additional charges) */}
         <Route
           path="/select-office"
           element={
-            <ProtectedRoute roles={['district_officer']}>
+            <ProtectedRoute permission="report.create" requireMultiOffice>
               <OfficeSelectPage />
             </ProtectedRoute>
           }
         />
 
-        {/* District Officer */}
+        {/* Office-scoped Portal (UNFEO) */}
+        <Route
+          path="/office-head"
+          element={
+            <ProtectedRoute permissions={['report.create', 'leave.review', 'attendance.view']} requireActiveOffice>
+              <OfficeHeadPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Subtree-scoped Portal (Assistant Director) */}
         <Route
           path="/district"
           element={
-            <ProtectedRoute roles={['district_officer']} requireActiveOffice>
+            <ProtectedRoute permission="attendance.settle" requireActiveOffice>
               <DistrictSettlementPage />
             </ProtectedRoute>
           }
@@ -187,7 +223,7 @@ export default function App() {
         <Route
           path="/district/approvals"
           element={
-            <ProtectedRoute roles={['district_officer']} requireActiveOffice>
+            <ProtectedRoute permissions={['fieldduty.review', 'leave.review']} requireActiveOffice>
               <DistrictApprovalsPage />
             </ProtectedRoute>
           }
@@ -195,27 +231,47 @@ export default function App() {
         <Route
           path="/district/reports"
           element={
-            <ProtectedRoute roles={['district_officer']} requireActiveOffice>
+            <ProtectedRoute permission="report.create" requireActiveOffice>
               <DistrictReportsPage />
             </ProtectedRoute>
           }
         />
 
-        {/* Head Office (DG - Read-only Reports) */}
+        {/* Oversight & DG AD Leave Review (DG & Head Office Officer) */}
         <Route
           path="/head-office"
           element={
-            <ProtectedRoute roles={['head_office']}>
+            <ProtectedRoute permissions={['report.view', 'attendance.view', 'leave.review']}>
               <HeadOfficeReportsPage />
             </ProtectedRoute>
           }
         />
 
-        {/* Super Admin */}
+        {/* Users & Devices (permission- and scope-enforced across Super Admin, AD, UNFEO, DG, HO Officer) */}
+        <Route
+          path="/admin/users"
+          element={
+            <ProtectedRoute permission="user.view">
+              <AdminUsersPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Audit Trail (Super Admin all, DG all, AD subtree) */}
+        <Route
+          path="/audit"
+          element={
+            <ProtectedRoute permission="audit.view">
+              <AuditLogPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Technical Administration (Super Admin) */}
         <Route
           path="/admin"
           element={
-            <ProtectedRoute roles={['super_admin']}>
+            <ProtectedRoute permissions={['settings.manage', 'attendance.photo.purge']}>
               <SuperAdminDashboardPage />
             </ProtectedRoute>
           }
@@ -223,23 +279,15 @@ export default function App() {
         <Route
           path="/admin/offices"
           element={
-            <ProtectedRoute roles={['super_admin']}>
+            <ProtectedRoute permission="office.manage">
               <AdminOfficesPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/admin/users"
-          element={
-            <ProtectedRoute roles={['super_admin']}>
-              <AdminUsersPage />
             </ProtectedRoute>
           }
         />
         <Route
           path="/admin/additional-charge"
           element={
-            <ProtectedRoute roles={['super_admin']}>
+            <ProtectedRoute permission="user.edit" requiredScope="all">
               <AdminAdditionalChargePage />
             </ProtectedRoute>
           }
@@ -247,8 +295,16 @@ export default function App() {
         <Route
           path="/admin/holidays"
           element={
-            <ProtectedRoute roles={['super_admin']}>
+            <ProtectedRoute permission="holiday.manage">
               <AdminHolidaysPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/permissions"
+          element={
+            <ProtectedRoute permission="settings.manage">
+              <AdminRolePermissionsPage />
             </ProtectedRoute>
           }
         />

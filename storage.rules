@@ -17,55 +17,149 @@ service firebase.storage {
     }
 
     function callerExists() {
-      return isSignedIn() && firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(request.auth.uid));
+      return isSignedIn()
+        && firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(request.auth.uid));
     }
 
-    function isSuperAdmin() {
+    function isApprovedActive() {
+      return callerExists()
+        && callerDoc().data.approvalStatus == 'approved'
+        && callerDoc().data.status == 'active';
+    }
+
+    // MIGRATION_COMPAT: legacy role mapping removed only after running scripts/migrate-roles.mjs
+    function normalizeRole(r) {
+      return r == 'head_office' ? 'director_general'
+        : (r == 'district_officer' ? 'assistant_director'
+        : (r == 'office_head' ? 'unfeo' : r));
+    }
+
+    function callerRole() {
       return (isSignedIn()
         && request.auth.token.email in ['absiddik5177@gmail.com', 'absiddik517@gmail.com']
         && request.auth.token.email_verified == true)
-        || (callerExists()
-          && callerDoc().data.approvalStatus == 'approved'
-          && callerDoc().data.status == 'active'
-          && callerDoc().data.role == 'super_admin');
+        ? 'super_admin'
+        : (isApprovedActive() ? normalizeRole(callerDoc().data.role) : '');
     }
 
-    function isDistrictOfficerForUser(uid) {
-      return callerExists()
-        && callerDoc().data.approvalStatus == 'approved'
-        && callerDoc().data.status == 'active'
-        && callerDoc().data.role == 'district_officer'
-        && firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid))
+    function permOverrideExists() {
+      return firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/settings/permissions);
+    }
+
+    function permOverrideData() {
+      return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/settings/permissions).data;
+    }
+
+    function hasOverrideScope(roleKey, perm) {
+      return roleKey != ''
+        && permOverrideExists()
+        && 'overrides' in permOverrideData()
+        && permOverrideData().overrides is map
+        && roleKey in permOverrideData().overrides
+        && permOverrideData().overrides[roleKey] is map
+        && perm in permOverrideData().overrides[roleKey]
+        && permOverrideData().overrides[roleKey][perm] is string;
+    }
+
+    function defaultStoragePermScope(perm) {
+      return perm == 'attendance.checkin'
+          ? (callerRole() in ['employee', 'unfeo', 'assistant_director', 'director_general', 'head_office_officer'] ? 'self' : '')
+        : (perm == 'attendance.photo.view'
+          ? (callerRole() == 'super_admin' ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree'
+            : (callerRole() == 'unfeo' ? 'office' : '')))
+        : (perm == 'attendance.photo.purge'
+          ? (callerRole() == 'super_admin' ? 'all' : '')
+        : (perm == 'attendance.settle'
+          ? (callerRole() == 'assistant_director' ? 'subtree' : '')
+        : (perm == 'user.edit'
+          ? (callerRole() == 'super_admin' ? 'all'
+            : (callerRole() == 'assistant_director' ? 'subtree' : ''))
+        : ''))));
+    }
+
+    function storagePermScope(perm) {
+      return hasOverrideScope(callerRole(), perm)
+        ? (permOverrideData().overrides[callerRole()][perm] == 'none' ? '' : permOverrideData().overrides[callerRole()][perm])
+        : defaultStoragePermScope(perm);
+    }
+
+    function isSuperAdminEditor() {
+      return storagePermScope('user.edit') == 'all';
+    }
+
+    function isCallerOfficeInScope(val) {
+      return val is string
+        && val != ''
         && (
-          firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid)).data.officeId == callerDoc().data.officeId
-          || firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid)).data.districtOfficeId == callerDoc().data.officeId
+          val == callerDoc().data.officeId
+          || (
+            'additionalOfficeIds' in callerDoc().data
+            && callerDoc().data.additionalOfficeIds is list
+            && val in callerDoc().data.additionalOfficeIds
+          )
         );
     }
 
-    // Permanent profile photos: writable only by owner or super_admin; readable by signed-in staff
+    function targetUserExists(uid) {
+      return firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid));
+    }
+
+    function targetUserDoc(uid) {
+      return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid)).data;
+    }
+
+    function targetInOfficeScope(uid) {
+      return targetUserExists(uid)
+        && 'officeId' in targetUserDoc(uid)
+        && isCallerOfficeInScope(targetUserDoc(uid).officeId);
+    }
+
+    function targetInSubtreeScope(uid) {
+      return targetUserExists(uid)
+        && (
+          ('officeId' in targetUserDoc(uid) && isCallerOfficeInScope(targetUserDoc(uid).officeId))
+          || ('districtOfficeId' in targetUserDoc(uid) && isCallerOfficeInScope(targetUserDoc(uid).districtOfficeId))
+        );
+    }
+
+    function canViewAttendancePhoto(uid) {
+      return storagePermScope('attendance.photo.view') == 'all'
+        || (storagePermScope('attendance.photo.view') == 'subtree' && targetInSubtreeScope(uid))
+        || (storagePermScope('attendance.photo.view') == 'office' && targetInOfficeScope(uid));
+    }
+
+    function canDeleteAttendancePhoto(uid) {
+      return storagePermScope('attendance.photo.purge') == 'all'
+        || storagePermScope('attendance.settle') == 'all'
+        || (storagePermScope('attendance.settle') == 'subtree' && targetInSubtreeScope(uid))
+        || (storagePermScope('attendance.settle') == 'office' && targetInOfficeScope(uid));
+    }
+
+    // Permanent profile photos: writable only by owner or user.edit (all); readable by signed-in staff
     match /profiles/{fileName} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn()
-        && (fileName == request.auth.uid + '.jpg' || isSuperAdmin())
+        && (fileName == request.auth.uid + '.jpg' || isSuperAdminEditor())
         && request.resource != null
         && request.resource.size <= 3 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
-      allow delete: if isSuperAdmin();
+      allow delete: if isSuperAdminEditor();
     }
 
-    // Attendance selfies: employee can upload ONLY to own attendance/{uid}/ path;
-    // cannot read others' photos; only district_officer (for their offices) and super_admin may read or delete.
+    // Attendance selfies: only staff with attendance.checkin can upload JPEG <= 2MB to own path;
+    // read follows attendance.photo.view; delete follows attendance.photo.purge / attendance.settle.
     match /attendance/{uid}/{fileName} {
       allow create, update: if isSignedIn()
         && request.auth.uid == uid
-        && callerExists()
-        && callerDoc().data.approvalStatus == 'approved'
-        && callerDoc().data.status == 'active'
+        && isApprovedActive()
+        && storagePermScope('attendance.checkin') != ''
         && request.resource != null
         && request.resource.size <= 2 * 1024 * 1024
         && request.resource.contentType == 'image/jpeg';
 
-      allow read, delete: if isSuperAdmin() || isDistrictOfficerForUser(uid);
+      allow read: if canViewAttendancePhoto(uid);
+      allow delete: if canDeleteAttendancePhoto(uid);
     }
   }
 }

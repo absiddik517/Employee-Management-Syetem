@@ -17,6 +17,12 @@ import StatusBadge, { getUserInitials } from '../../components/users/StatusBadge
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useData } from '../../context/DataContext.jsx';
 import { db, OperationType, handleFirestoreError, withTimeout } from '../../firebase/config.js';
+import { ROLES, getPermissionScope, getRoleLabel } from '../../lib/permissions.js';
+
+function isMultiChargeCapable(role) {
+  const scope = getPermissionScope({ role, approvalStatus: 'approved', status: 'active' }, 'report.create');
+  return scope === 'subtree' || scope === 'office';
+}
 
 export default function AdminAdditionalChargePage() {
   const { profile, offices } = useAuth();
@@ -25,7 +31,7 @@ export default function AdminAdditionalChargePage() {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState([]);
   const [search, setSearch] = useState('');
-  const [roleFilter, setRoleFilter] = useState('district_officer'); // 'district_officer' | 'assigned' | 'all'
+  const [roleFilter, setRoleFilter] = useState('officers'); // 'officers' | 'assigned' | 'all'
   const [errorMsg, setErrorMsg] = useState('');
   const [toastMsg, setToastMsg] = useState('');
   const toastTimerRef = useRef(null);
@@ -34,7 +40,7 @@ export default function AdminAdditionalChargePage() {
   const [activeUser, setActiveUser] = useState(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [selectedAdditionalIds, setSelectedAdditionalIds] = useState([]);
-  const [districtSearch, setDistrictSearch] = useState('');
+  const [officeSearch, setOfficeSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [sheetError, setSheetError] = useState('');
 
@@ -90,20 +96,15 @@ export default function AdminAdditionalChargePage() {
     return counts;
   }, [offices]);
 
-  const districtOffices = useMemo(
-    () => offices.filter((o) => o.level === 'district'),
-    [offices]
-  );
-
   const counts = useMemo(() => {
-    let districtCount = 0;
+    let officerCount = 0;
     let assignedCount = 0;
     for (const u of users) {
-      if (u.role === 'district_officer') districtCount += 1;
+      if (isMultiChargeCapable(u.role)) officerCount += 1;
       if (Array.isArray(u.additionalOfficeIds) && u.additionalOfficeIds.length > 0) assignedCount += 1;
     }
     return {
-      district_officer: districtCount,
+      officers: officerCount,
       assigned: assignedCount,
       all: users.length
     };
@@ -112,7 +113,7 @@ export default function AdminAdditionalChargePage() {
   const filteredUsers = useMemo(() => {
     const q = search.trim().toLowerCase();
     return users.filter((u) => {
-      if (roleFilter === 'district_officer' && u.role !== 'district_officer') return false;
+      if (roleFilter === 'officers' && !isMultiChargeCapable(u.role)) return false;
       if (roleFilter === 'assigned' && !(Array.isArray(u.additionalOfficeIds) && u.additionalOfficeIds.length > 0)) {
         return false;
       }
@@ -138,12 +139,12 @@ export default function AdminAdditionalChargePage() {
       ? u.additionalOfficeIds.filter((id) => id && id !== u.officeId)
       : [];
     setSelectedAdditionalIds(Array.from(new Set(existingIds)));
-    setDistrictSearch('');
+    setOfficeSearch('');
     setSheetError('');
     setSheetOpen(true);
   };
 
-  const toggleDistrictSelection = (officeId) => {
+  const toggleOfficeSelection = (officeId) => {
     if (!activeUser || officeId === activeUser.officeId) return;
     setSelectedAdditionalIds((prev) =>
       prev.includes(officeId) ? prev.filter((id) => id !== officeId) : [...prev, officeId]
@@ -152,8 +153,14 @@ export default function AdminAdditionalChargePage() {
 
   const candidateOffices = useMemo(() => {
     if (!activeUser) return [];
-    const q = districtSearch.trim().toLowerCase();
-    return districtOffices.filter((o) => {
+    const scope = getPermissionScope(
+      { role: activeUser.role, approvalStatus: 'approved', status: 'active' },
+      'report.create'
+    );
+    const targetLevel = scope === 'office' ? 'upazila' : 'district';
+    const q = officeSearch.trim().toLowerCase();
+    return offices.filter((o) => {
+      if (o.level !== targetLevel) return false;
       if (o.id === activeUser.officeId) return false;
       if (!q) return true;
       return (
@@ -161,7 +168,7 @@ export default function AdminAdditionalChargePage() {
         (o.address || '').toLowerCase().includes(q)
       );
     });
-  }, [districtOffices, activeUser, districtSearch]);
+  }, [offices, activeUser, officeSearch]);
 
   const handleSave = async (e) => {
     e.preventDefault();
@@ -193,7 +200,9 @@ export default function AdminAdditionalChargePage() {
         targetId: targetUid,
         oldValue: prevIds.map((id) => officeMap.get(id)?.name || id).join(', ') || 'None',
         newValue: sanitized.map((id) => officeMap.get(id)?.name || id).join(', ') || 'None',
-        reason: 'Super admin updated additional charge offices'
+        reason: 'Super admin updated additional charge offices',
+        officeId: activeUser.officeId || '',
+        districtOfficeId: activeUser.districtOfficeId || ''
       });
 
       setSheetOpen(false);
@@ -212,7 +221,7 @@ export default function AdminAdditionalChargePage() {
   };
 
   const filterChips = [
-    { key: 'district_officer', label: 'District officers', count: counts.district_officer },
+    { key: 'officers', label: 'AD & UNFEO', count: counts.officers },
     { key: 'assigned', label: 'With additional charge', count: counts.assigned },
     { key: 'all', label: 'All staff', count: counts.all }
   ];
@@ -257,7 +266,7 @@ export default function AdminAdditionalChargePage() {
               Additional Charge (অতিরিক্ত দায়িত্ব)
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
-              সহকারী পরিচালকদের নিজ জেলার পাশাপাশি অতিরিক্ত জেলা কার্যালয়ের দায়িত্ব নির্ধারণ করুন · {counts.assigned} active assignments
+              সহকারী পরিচালক (জেলা) ও UNFEO (উপজেলা) কর্মকর্তাদের অতিরিক্ত দায়িত্ব নির্ধারণ করুন · {counts.assigned} active assignments
             </p>
           </div>
         </section>
@@ -274,7 +283,7 @@ export default function AdminAdditionalChargePage() {
               onChange={(e) => setSearch(e.target.value)}
               type="search"
               aria-label="Search officers by name, email, or office"
-              placeholder="Search officer name, email, or district..."
+              placeholder="Search officer name, email, or office..."
               className="w-full min-h-[44px] pl-10 pr-10 py-2 rounded-[16px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-base text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#0b6b4f] dark:focus:ring-[#4fd1a1] focus:border-transparent"
             />
             {search && (
@@ -347,7 +356,7 @@ export default function AdminAdditionalChargePage() {
                 কোনো কর্মকর্তা পাওয়া যায়নি
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                ফিল্টার পরিবর্তন করে অথবা নতুন সহকারী পরিচালক তৈরি করে পুনরায় দেখুন।
+                ফিল্টার পরিবর্তন করে অথবা নতুন কর্মকর্তা তৈরি করে পুনরায় দেখুন।
               </p>
             </div>
           </div>
@@ -381,7 +390,7 @@ export default function AdminAdditionalChargePage() {
                           </p>
                         </div>
                       </div>
-                      <StatusBadge kind="role" value={u.role || 'employee'} />
+                      <StatusBadge kind="role" value={u.role || ROLES.employee.key} />
                     </div>
 
                     <div className="rounded-[14px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-800 p-3 space-y-2.5">
@@ -401,7 +410,7 @@ export default function AdminAdditionalChargePage() {
                         </div>
                         {additionalIds.length === 0 ? (
                           <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                            কোনো অতিরিক্ত জেলা কার্যালয়ের দায়িত্ব নেই
+                            কোনো অতিরিক্ত অফিসের দায়িত্ব নেই
                           </div>
                         ) : (
                           <ul className="mt-1.5 space-y-1">
@@ -414,9 +423,11 @@ export default function AdminAdditionalChargePage() {
                                   className="text-xs font-medium text-amber-800 dark:text-amber-300 flex items-center justify-between gap-2"
                                 >
                                   <span className="truncate">{off?.name || officeId}</span>
-                                  <span className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0 tabular-nums">
-                                    {subCount} উপজেলা
-                                  </span>
+                                  {off?.level === 'district' && (
+                                    <span className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0 tabular-nums">
+                                      {subCount} উপজেলা
+                                    </span>
+                                  )}
                                 </li>
                               );
                             })}
@@ -448,7 +459,7 @@ export default function AdminAdditionalChargePage() {
         open={sheetOpen && Boolean(activeUser)}
         onClose={saving ? undefined : () => setSheetOpen(false)}
         title="অতিরিক্ত দায়িত্ব নির্ধারণ"
-        subtitle={activeUser ? `${activeUser.name || activeUser.email} (${activeUser.designation || activeUser.role})` : ''}
+        subtitle={activeUser ? `${activeUser.name || activeUser.email} (${activeUser.designation || getRoleLabel(activeUser.role)})` : ''}
         maxWidthClass="sm:max-w-xl"
         footer={sheetFooter}
       >
@@ -456,14 +467,14 @@ export default function AdminAdditionalChargePage() {
           <form id="additional-charge-form" onSubmit={handleSave} className="space-y-4">
             <div className="p-3.5 rounded-[16px] bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-1">
               <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-                মূল দায়িত্ব (Primary District Office)
+                মূল দায়িত্ব (Primary Office)
               </div>
               <div className="text-sm font-bold text-slate-900 dark:text-slate-100">
                 {officeMap.get(activeUser.officeId)?.name || 'নির্ধারিত নয়'}
               </div>
-              {activeUser.role !== 'district_officer' && (
+              {!isMultiChargeCapable(activeUser.role) && (
                 <p className="text-xs text-amber-700 dark:text-amber-300 pt-1">
-                  দ্রষ্টব্য: এই ব্যবহারকারীর রোল বর্তমানে &ldquo;{activeUser.role}&rdquo;। অতিরিক্ত জেলা কার্যালয় পরিচালনার জন্য Users প্যানেল থেকে রোল &ldquo;District officer&rdquo; করুন।
+                  দ্রষ্টব্য: এই ব্যবহারকারীর রোল বর্তমানে &ldquo;{getRoleLabel(activeUser.role)}&rdquo;। অতিরিক্ত অফিস পরিচালনার জন্য Assistant Director অথবা UNFEO রোল নির্ধারণ করুন।
                 </p>
               )}
             </div>
@@ -479,8 +490,8 @@ export default function AdminAdditionalChargePage() {
 
             <div className="space-y-2.5">
               <div className="flex items-center justify-between gap-2">
-                <label htmlFor="district-search" className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  অতিরিক্ত জেলা কার্যালয়সমূহ নির্বাচন করুন ({selectedAdditionalIds.length} selected)
+                <label htmlFor="office-charge-search" className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  অতিরিক্ত অফিসসমূহ নির্বাচন করুন ({selectedAdditionalIds.length} selected)
                 </label>
               </div>
 
@@ -490,18 +501,18 @@ export default function AdminAdditionalChargePage() {
                   className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
                 />
                 <input
-                  id="district-search"
+                  id="office-charge-search"
                   type="search"
-                  value={districtSearch}
-                  onChange={(e) => setDistrictSearch(e.target.value)}
-                  placeholder="জেলা কার্যালয় খুঁজুন..."
+                  value={officeSearch}
+                  onChange={(e) => setOfficeSearch(e.target.value)}
+                  placeholder="অফিস খুঁজুন..."
                   className="w-full min-h-[44px] pl-10 pr-4 py-2 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800/90 text-base text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#0b6b4f] dark:focus:ring-[#4fd1a1]"
                 />
               </div>
 
               {candidateOffices.length === 0 ? (
                 <div className="p-6 text-center rounded-[16px] border border-dashed border-slate-300 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
-                  অতিরিক্ত দায়িত্ব দেওয়ার মতো অন্য কোনো জেলা কার্যালয় পাওয়া যায়নি।
+                  অতিরিক্ত দায়িত্ব দেওয়ার মতো অন্য কোনো অফিস পাওয়া যায়নি।
                 </div>
               ) : (
                 <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
@@ -514,7 +525,7 @@ export default function AdminAdditionalChargePage() {
                         type="button"
                         role="checkbox"
                         aria-checked={checked}
-                        onClick={() => toggleDistrictSelection(office.id)}
+                        onClick={() => toggleOfficeSelection(office.id)}
                         className={`w-full min-h-[52px] px-3.5 py-3 rounded-[14px] border text-left flex items-center justify-between gap-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
                           checked
                             ? 'bg-[#0b6b4f]/8 dark:bg-[#4fd1a1]/12 border-[#0b6b4f] dark:border-[#4fd1a1]'
@@ -526,7 +537,8 @@ export default function AdminAdditionalChargePage() {
                             {office.name}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5 tabular-nums">
-                            {office.address || 'ঠিকানা নেই'} · {subCount}টি অধীনস্থ উপজেলা
+                            {office.address || 'ঠিকানা নেই'}
+                            {office.level === 'district' ? ` · ${subCount}টি অধীনস্থ উপজেলা` : ''}
                           </div>
                         </div>
 

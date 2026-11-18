@@ -1,8 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Info } from 'lucide-react';
 import BottomSheet from './BottomSheet.jsx';
 import { SubmissionTasksInline, SubmissionTasksFeedback } from '../SubmissionTasks.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { getTodayDhaka } from '../../utils/dhakaTime.js';
+import {
+  ROLES,
+  getPermissionScope,
+  getRoleLabel,
+  getUserOfficeScopeIds,
+  normalizeRole
+} from '../../lib/permissions.js';
 
 function toDateInputValue(val, fallback = '') {
   if (!val) return fallback;
@@ -19,20 +27,31 @@ const INPUT_CLASS =
 const LABEL_CLASS = 'block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5';
 const ERROR_CLASS = 'mt-1 text-xs text-rose-600 dark:text-rose-400';
 
-function AdditionalChargePicker({ offices, primaryOfficeId, selectedIds = [], onToggle, idPrefix }) {
-  const districtOffices = offices.filter((o) => o.level === 'district' && o.id !== primaryOfficeId);
+function roleSupportsAdditionalCharge(role) {
+  const scope = getPermissionScope({ role, approvalStatus: 'approved', status: 'active' }, 'report.create');
+  return scope === 'subtree' || scope === 'office';
+}
+
+function getCandidateOfficesForRole(offices, role, primaryOfficeId) {
+  const scope = getPermissionScope({ role, approvalStatus: 'approved', status: 'active' }, 'report.create');
+  const level = scope === 'office' ? 'upazila' : 'district';
+  return offices.filter((o) => o.level === level && o.id !== primaryOfficeId);
+}
+
+function AdditionalChargePicker({ offices, role, primaryOfficeId, selectedIds = [], onToggle, idPrefix }) {
+  const candidateOffices = getCandidateOfficesForRole(offices, role, primaryOfficeId);
   return (
     <div className="sm:col-span-2 space-y-2">
       <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
         Additional charge offices (অতিরিক্ত দায়িত্ব · optional)
       </div>
-      {districtOffices.length === 0 ? (
+      {candidateOffices.length === 0 ? (
         <div className="p-3 rounded-[14px] border border-dashed border-slate-300 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
-          No other district offices available to assign.
+          No additional offices available to assign for this role.
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto p-2.5 rounded-[14px] border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/40">
-          {districtOffices.map((o) => {
+          {candidateOffices.map((o) => {
             const checked = selectedIds.includes(o.id);
             return (
               <label
@@ -73,6 +92,35 @@ export default function UserFormSheet({
   onLinkSubmit,
   onEditSubmit
 }) {
+  const { effectiveAuthUser, assignableRoles, permissionScope, can } = useAuth();
+  const editScope = permissionScope('user.edit');
+  const canManageAdditionalCharge = editScope === 'all';
+
+  const selectableOffices = useMemo(() => {
+    if (editScope !== 'subtree' || !effectiveAuthUser) return offices;
+    const scopeIds = new Set(getUserOfficeScopeIds(effectiveAuthUser));
+    return offices.filter((o) => scopeIds.has(o.id) || scopeIds.has(o.parentOfficeId));
+  }, [editScope, effectiveAuthUser, offices]);
+
+  const roleOptionsForEdit = useMemo(() => {
+    if (!user) return assignableRoles;
+    const currentNorm = normalizeRole(user.role) || user.role;
+    if (assignableRoles.some((r) => r.key === currentNorm)) {
+      return assignableRoles;
+    }
+    return [{ key: currentNorm, label: getRoleLabel(currentNorm) }, ...assignableRoles];
+  }, [assignableRoles, user]);
+
+  const canAssignTargetRole = useMemo(() => {
+    if (!user) return assignableRoles.length > 0;
+    return can('user.role.assign', {
+      uid: user.uid || user.id,
+      currentRole: user.role,
+      officeId: user.officeId || '',
+      districtOfficeId: user.districtOfficeId || ''
+    });
+  }, [assignableRoles.length, can, user]);
+
   // Create form state
   const [createForm, setCreateForm] = useState({
     name: '',
@@ -83,7 +131,7 @@ export default function UserFormSheet({
     password: '',
     officeId: '',
     additionalOfficeIds: [],
-    role: 'employee',
+    role: ROLES.employee.key,
     joiningDate: getTodayDhaka()
   });
   const [createPhotoFile, setCreatePhotoFile] = useState(null);
@@ -100,7 +148,7 @@ export default function UserFormSheet({
     address: '',
     officeId: '',
     additionalOfficeIds: [],
-    role: 'employee',
+    role: ROLES.employee.key,
     approvalStatus: 'approved',
     status: 'active',
     joiningDate: getTodayDhaka()
@@ -116,7 +164,7 @@ export default function UserFormSheet({
     additionalOfficeIds: [],
     address: '',
     joiningDate: getTodayDhaka(),
-    role: 'employee',
+    role: ROLES.employee.key,
     status: 'active',
     resignationDate: '',
     approvalStatus: 'approved'
@@ -125,7 +173,6 @@ export default function UserFormSheet({
   const [errors, setErrors] = useState({});
   const [submitError, setSubmitError] = useState('');
 
-  // Reset form values cleanly when opening a mode/target
   useEffect(() => {
     if (!open) return;
     setErrors({});
@@ -141,7 +188,7 @@ export default function UserFormSheet({
         password: '',
         officeId: '',
         additionalOfficeIds: [],
-        role: 'employee',
+        role: ROLES.employee.key,
         joiningDate: getTodayDhaka()
       });
       setCreatePhotoFile(null);
@@ -157,7 +204,7 @@ export default function UserFormSheet({
         address: '',
         officeId: '',
         additionalOfficeIds: [],
-        role: 'employee',
+        role: ROLES.employee.key,
         approvalStatus: 'approved',
         status: 'active',
         joiningDate: getTodayDhaka()
@@ -174,7 +221,7 @@ export default function UserFormSheet({
           : [],
         address: user.address || '',
         joiningDate: toDateInputValue(user.joiningDate, getTodayDhaka()),
-        role: user.role || 'employee',
+        role: normalizeRole(user.role) || ROLES.employee.key,
         status: user.status || 'active',
         resignationDate: toDateInputValue(user.resignationDate, ''),
         approvalStatus: user.approvalStatus || 'pending'
@@ -263,7 +310,11 @@ export default function UserFormSheet({
 
     if (mode === 'edit' && user) {
       const nextErrors = validateCommonStaffFields(editForm);
-      if (editForm.status === 'resigned' && editForm.resignationDate && !/^\d{4}-\d{2}-\d{2}$/.test(editForm.resignationDate)) {
+      if (
+        editForm.status === 'resigned' &&
+        editForm.resignationDate &&
+        !/^\d{4}-\d{2}-\d{2}$/.test(editForm.resignationDate)
+      ) {
         nextErrors.resignationDate = 'Select a valid resignation date.';
       }
       if (Object.keys(nextErrors).length > 0) {
@@ -509,7 +560,7 @@ export default function UserFormSheet({
                   className={INPUT_CLASS}
                 >
                   <option value="">Assign office later / None</option>
-                  {offices.map((o) => (
+                  {selectableOffices.map((o) => (
                     <option key={o.id} value={o.id}>
                       {o.name}
                     </option>
@@ -537,14 +588,14 @@ export default function UserFormSheet({
                 <select
                   id="link-role"
                   value={linkForm.role}
-                  onChange={(e) => setLinkForm((f) => ({ ...f, role: e.target.value }))}
+                  onChange={(e) => setLinkForm((f) => ({ ...f, role: e.target.value, additionalOfficeIds: [] }))}
                   className={INPUT_CLASS}
                 >
-                  <option value="employee">Employee</option>
-                  <option value="office_head">Office head</option>
-                  <option value="district_officer">District officer</option>
-                  <option value="head_office">Head office (DG)</option>
-                  <option value="super_admin">Super admin</option>
+                  {assignableRoles.map((r) => (
+                    <option key={r.key} value={r.key}>
+                      {r.label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -589,9 +640,10 @@ export default function UserFormSheet({
                 {errors.joiningDate && <p className={ERROR_CLASS}>{errors.joiningDate}</p>}
               </div>
 
-              {linkForm.role === 'district_officer' && (
+              {canManageAdditionalCharge && roleSupportsAdditionalCharge(linkForm.role) && (
                 <AdditionalChargePicker
                   offices={offices}
+                  role={linkForm.role}
                   primaryOfficeId={linkForm.officeId}
                   selectedIds={linkForm.additionalOfficeIds}
                   idPrefix="link"
@@ -682,7 +734,7 @@ export default function UserFormSheet({
                 className={INPUT_CLASS}
               >
                 <option value="">Assign office later / None</option>
-                {offices.map((o) => (
+                {selectableOffices.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name}
                   </option>
@@ -742,14 +794,14 @@ export default function UserFormSheet({
               <select
                 id="create-role"
                 value={createForm.role}
-                onChange={(e) => setCreateForm((f) => ({ ...f, role: e.target.value }))}
+                onChange={(e) => setCreateForm((f) => ({ ...f, role: e.target.value, additionalOfficeIds: [] }))}
                 className={INPUT_CLASS}
               >
-                <option value="employee">Employee</option>
-                <option value="office_head">Office head</option>
-                <option value="district_officer">District officer</option>
-                <option value="head_office">Head office (DG)</option>
-                <option value="super_admin">Super admin</option>
+                {assignableRoles.map((r) => (
+                  <option key={r.key} value={r.key}>
+                    {r.label}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -768,9 +820,10 @@ export default function UserFormSheet({
               {errors.joiningDate && <p className={ERROR_CLASS}>{errors.joiningDate}</p>}
             </div>
 
-            {createForm.role === 'district_officer' && (
+            {canManageAdditionalCharge && roleSupportsAdditionalCharge(createForm.role) && (
               <AdditionalChargePicker
                 offices={offices}
+                role={createForm.role}
                 primaryOfficeId={createForm.officeId}
                 selectedIds={createForm.additionalOfficeIds}
                 idPrefix="create"
@@ -859,8 +912,8 @@ export default function UserFormSheet({
                 }
                 className={INPUT_CLASS}
               >
-                <option value="">Assign office later / None</option>
-                {offices.map((o) => (
+                {editScope === 'all' && <option value="">Assign office later / None</option>}
+                {selectableOffices.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name}
                   </option>
@@ -903,14 +956,15 @@ export default function UserFormSheet({
               <select
                 id="edit-role"
                 value={editForm.role}
+                disabled={!canAssignTargetRole}
                 onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))}
-                className={INPUT_CLASS}
+                className={`${INPUT_CLASS} disabled:opacity-60`}
               >
-                <option value="employee">Employee</option>
-                <option value="office_head">Office head</option>
-                <option value="district_officer">District officer</option>
-                <option value="head_office">Head office (DG)</option>
-                <option value="super_admin">Super admin</option>
+                {roleOptionsForEdit.map((r) => (
+                  <option key={r.key} value={r.key}>
+                    {r.label}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -941,9 +995,10 @@ export default function UserFormSheet({
               </select>
             </div>
 
-            {editForm.role === 'district_officer' && (
+            {canManageAdditionalCharge && roleSupportsAdditionalCharge(editForm.role) && (
               <AdditionalChargePicker
                 offices={offices}
+                role={editForm.role}
                 primaryOfficeId={editForm.officeId}
                 selectedIds={editForm.additionalOfficeIds}
                 idPrefix="edit"

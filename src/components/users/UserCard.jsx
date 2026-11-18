@@ -1,6 +1,7 @@
 import React from 'react';
 import { ChevronRight, Smartphone } from 'lucide-react';
 import StatusBadge, { getUserInitials } from './StatusBadge.jsx';
+import { ROLES } from '../../lib/permissions.js';
 
 export default function UserCard({ user, officeName, onSelect }) {
   const uid = user.uid || user.id;
@@ -42,7 +43,7 @@ export default function UserCard({ user, officeName, onSelect }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            <StatusBadge kind="role" value={user.role || 'employee'} />
+            <StatusBadge kind="role" value={user.role || ROLES.employee.key} />
             <StatusBadge kind="status" value={user.status || 'active'} />
             <StatusBadge kind="approval" value={user.approvalStatus || 'pending'} />
           </div>

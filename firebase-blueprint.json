@@ -38,7 +38,11 @@
         "status": { "type": "string", "enum": ["active", "resigned"] },
         "resignationDate": { "type": "string", "maxLength": 20 },
         "profilePhotoPath": { "type": "string", "maxLength": 300 },
-        "role": { "type": "string", "enum": ["employee", "office_head", "district_officer", "head_office", "super_admin"] },
+        "role": {
+          "type": "string",
+          "enum": ["employee", "unfeo", "assistant_director", "head_office_officer", "director_general", "super_admin", "office_head", "district_officer", "head_office"],
+          "description": "Canonical roles plus legacy aliases preserved during role migration"
+        },
         "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
         "boundDeviceId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -199,6 +203,18 @@
         "updatedBy": { "type": "string", "maxLength": 128 }
       },
       "required": ["registrationOpen", "updatedAt", "updatedBy"]
+    },
+    "PermissionConfig": {
+      "title": "PermissionConfig",
+      "description": "Dynamic per-role permission scope overrides managed by Super Admin in settings/permissions",
+      "type": "object",
+      "properties": {
+        "overrides": { "type": "object", "description": "Map of roleKey -> { permissionKey: 'none' | 'self' | 'office' | 'subtree' | 'all' }" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "updatedByName": { "type": "string", "maxLength": 120 }
+      },
+      "required": ["overrides", "updatedAt", "updatedBy"]
     }
   },
   "firestore": {
@@ -240,7 +256,7 @@
     },
     "/settings/{settingId}": {
       "schema": { "$ref": "#/entities/AppSettings" },
-      "description": "Global settings document (settings/app)"
+      "description": "Global settings documents: settings/app (AppSettings) and settings/permissions (PermissionConfig)"
     }
   }
 }

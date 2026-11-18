@@ -5,15 +5,20 @@ import StatusText from '../../components/StatusText.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useData } from '../../context/DataContext.jsx';
 import { db, OperationType, handleFirestoreError } from '../../firebase/config.js';
+import { getApproverHint, getRoleLabel } from '../../lib/permissions.js';
 
 export default function DistrictApprovalsPage() {
-  const { profile, offices, activeOfficeId, activeOffice, activeChargeType } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, canReview } = useAuth();
   const { logAudit } = useData();
 
-  const [tab, setTab] = useState('leaves');
+  const canLeaveReview = can('leave.review');
+  const canFieldReview = can('fieldduty.review');
+
+  const [tab, setTab] = useState(() => (canLeaveReview ? 'leaves' : 'field'));
   const [loading, setLoading] = useState(true);
   const [leaves, setLeaves] = useState([]);
   const [fieldDuties, setFieldDuties] = useState([]);
+  const [staffByUid, setStaffByUid] = useState(() => new Map());
   const [comments, setComments] = useState({});
   const [feedbackMsg, setFeedbackMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -36,11 +41,13 @@ export default function DistrictApprovalsPage() {
     setLoading(true);
     setErrorMsg('');
     try {
-      const [l1, l2, f1, f2] = await Promise.all([
+      const [l1, l2, f1, f2, u1, u2] = await Promise.all([
         getDocs(query(collection(db, 'leaves'), where('districtOfficeId', '==', myOfficeId))),
         getDocs(query(collection(db, 'leaves'), where('officeId', '==', myOfficeId))),
         getDocs(query(collection(db, 'fieldDuties'), where('districtOfficeId', '==', myOfficeId))),
-        getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId)))
+        getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId))),
+        getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId))),
+        getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId)))
       ]);
 
       const merge = (a, b) => {
@@ -53,6 +60,12 @@ export default function DistrictApprovalsPage() {
         });
       };
 
+      const uMap = new Map();
+      for (const d of [...u1.docs, ...u2.docs]) {
+        uMap.set(d.id, { uid: d.id, id: d.id, ...d.data() });
+      }
+
+      setStaffByUid(uMap);
       setLeaves(merge(l1, l2));
       setFieldDuties(merge(f1, f2));
     } catch (err) {
@@ -68,10 +81,35 @@ export default function DistrictApprovalsPage() {
   }, [loadRequests]);
 
   const activeList = tab === 'leaves' ? leaves : fieldDuties;
-  const pendingLeavesCount = useMemo(() => leaves.filter((l) => l.status === 'pending').length, [leaves]);
-  const pendingFieldCount = useMemo(() => fieldDuties.filter((f) => f.status === 'pending').length, [fieldDuties]);
+  const kind = tab === 'leaves' ? 'leave' : 'fieldduty';
+
+  const canReviewItem = useCallback(
+    (item, reviewKind) => {
+      const staff = staffByUid.get(item.uid);
+      return canReview(
+        {
+          uid: item.uid,
+          officeId: item.officeId,
+          districtOfficeId: item.districtOfficeId,
+          role: staff?.role || null
+        },
+        reviewKind
+      );
+    },
+    [staffByUid, canReview]
+  );
+
+  const pendingLeavesCount = useMemo(
+    () => leaves.filter((l) => l.status === 'pending' && canReviewItem(l, 'leave')).length,
+    [leaves, canReviewItem]
+  );
+  const pendingFieldCount = useMemo(
+    () => fieldDuties.filter((f) => f.status === 'pending' && canReviewItem(f, 'fieldduty')).length,
+    [fieldDuties, canReviewItem]
+  );
 
   const reviewItem = async (item, decision) => {
+    if (!canReviewItem(item, kind)) return;
     setErrorMsg('');
     setFeedbackMsg('');
     const col = tab === 'leaves' ? 'leaves' : 'fieldDuties';
@@ -105,18 +143,18 @@ export default function DistrictApprovalsPage() {
   };
 
   return (
-    <AppShell>
+    <AppShell showThemeToggle>
       <div className="space-y-4">
         {activeOffice && (
-          <div className="bg-white rounded-2xl border border-slate-200 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-semibold text-slate-700">
-              কার্যালয়: <span className="text-slate-900 font-bold">{activeOffice.name}</span>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              কার্যালয়: <span className="text-slate-900 dark:text-slate-100 font-bold">{activeOffice.name}</span>
             </div>
             <span
               className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
                 activeChargeType === 'additional'
-                  ? 'bg-amber-100 text-amber-800'
-                  : 'bg-emerald-100 text-emerald-800'
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                  : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
               }`}
             >
               {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'}
@@ -124,96 +162,131 @@ export default function DistrictApprovalsPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-1 p-1 bg-slate-200/70 rounded-xl">
-          <button
-            type="button"
-            onClick={() => setTab('leaves')}
-            className={`min-h-[44px] rounded-lg text-sm font-semibold transition-colors ${
-              tab === 'leaves' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-            }`}
-          >
-            Leave Requests ({pendingLeavesCount})
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('field')}
-            className={`min-h-[44px] rounded-lg text-sm font-semibold transition-colors ${
-              tab === 'field' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-            }`}
-          >
-            Field Duty ({pendingFieldCount})
-          </button>
+        <div className="grid grid-cols-2 gap-1 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl">
+          {canLeaveReview && (
+            <button
+              type="button"
+              onClick={() => setTab('leaves')}
+              className={`min-h-[44px] rounded-lg text-sm font-semibold transition-colors ${
+                tab === 'leaves'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              Leave Requests ({pendingLeavesCount})
+            </button>
+          )}
+          {canFieldReview && (
+            <button
+              type="button"
+              onClick={() => setTab('field')}
+              className={`min-h-[44px] rounded-lg text-sm font-semibold transition-colors ${
+                tab === 'field'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              Field Duty ({pendingFieldCount})
+            </button>
+          )}
         </div>
 
         {feedbackMsg && (
-          <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-200">
             {feedbackMsg}
           </div>
         )}
         {errorMsg && (
-          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">{errorMsg}</div>
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200">
+            {errorMsg}
+          </div>
         )}
 
         {loading ? (
-          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-sm text-slate-600">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center text-sm text-slate-600 dark:text-slate-300">
             লোড হচ্ছে...
           </div>
         ) : !activeList.length ? (
-          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-sm text-slate-500">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center text-sm text-slate-500 dark:text-slate-400">
             কোনো আবেদন পাওয়া যায়নি।
           </div>
         ) : (
           <div className="space-y-3">
-            {activeList.map((item) => (
-              <div key={item.id} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-bold text-slate-900">{item.employeeName}</div>
-                    <div className="text-xs text-slate-500">
-                      {officeName(item.officeId)} · {item.startDate} to {item.endDate}
-                    </div>
-                    <div className="text-xs text-slate-700 mt-1">
-                      <span className="font-semibold">{item.leaveType || item.location}:</span> {item.reason}
-                    </div>
-                  </div>
-                  <StatusText status={item.status} />
-                </div>
+            {activeList.map((item) => {
+              const staff = staffByUid.get(item.uid);
+              const applicantRole = staff?.role || null;
+              const allowed = canReviewItem(item, kind);
 
-                {item.status === 'pending' ? (
-                  <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                    <input
-                      value={comments[item.id] || ''}
-                      onChange={(e) => setComments((c) => ({ ...c, [item.id]: e.target.value }))}
-                      type="text"
-                      placeholder="Optional review comment..."
-                      className="flex-1 min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs"
-                    />
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => reviewItem(item, 'approved')}
-                        className="flex-1 sm:flex-none min-h-[44px] px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => reviewItem(item, 'rejected')}
-                        className="flex-1 sm:flex-none min-h-[44px] px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-semibold"
-                      >
-                        Reject
-                      </button>
+              return (
+                <div
+                  key={item.id}
+                  className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-3"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                          {item.employeeName}
+                        </span>
+                        {applicantRole && (
+                          <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                            {getRoleLabel(applicantRole)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">
+                        {officeName(item.officeId)} · {item.startDate} to {item.endDate}
+                      </div>
+                      <div className="text-xs text-slate-700 dark:text-slate-300 mt-1">
+                        <span className="font-semibold">{item.leaveType || item.location}:</span> {item.reason}
+                      </div>
                     </div>
+                    <StatusText status={item.status} />
                   </div>
-                ) : (
-                  item.reviewComment && (
-                    <div className="text-xs text-slate-500">
-                      Comment: {item.reviewComment} ({item.reviewedByName})
-                    </div>
-                  )
-                )}
-              </div>
-            ))}
+
+                  {item.status === 'pending' ? (
+                    allowed ? (
+                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <input
+                          value={comments[item.id] || ''}
+                          onChange={(e) => setComments((c) => ({ ...c, [item.id]: e.target.value }))}
+                          type="text"
+                          placeholder="Optional review comment..."
+                          className="flex-1 min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-base sm:text-xs"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => reviewItem(item, 'approved')}
+                            className="flex-1 sm:flex-none min-h-[44px] px-4 py-2 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] text-white text-xs font-semibold"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => reviewItem(item, 'rejected')}
+                            className="flex-1 sm:flex-none min-h-[44px] px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-semibold"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-xs text-amber-700 dark:text-amber-300">
+                        অনুমোদনকারী কর্তৃপক্ষ:{' '}
+                        <strong>{getApproverHint(applicantRole || profile?.role, kind)}</strong>
+                      </div>
+                    )
+                  ) : (
+                    item.reviewComment && (
+                      <div className="text-xs text-slate-500 dark:text-slate-400">
+                        Comment: {item.reviewComment} ({item.reviewedByName})
+                      </div>
+                    )
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

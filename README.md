@@ -1,12 +1,14 @@
 # EMS — Employee Management System (Bangladesh Government Offices)
 
-Mobile-first attendance and departure monitoring web application built with **Vue 3 (Options API)**, **plain JavaScript**, **Vite**, **Vue Router (Hash History)**, **Pinia**, **Tailwind CSS**, and **Firebase Modular SDK (Auth, Firestore, Storage)**. Designed at 360px+ touch-friendly ergonomics for future Capacitor Android packaging.
+Mobile-first attendance, leave, field duty, and monthly reporting web/Android application built with **React 19**, **JavaScript / JSX**, **Vite**, **React Router (`HashRouter`)**, **React Context (`AuthContext`, `DataContext`)**, **Tailwind CSS v4**, and **Firebase Modular SDK (Auth, Firestore, Storage)**. Designed at 360px+ touch-friendly ergonomics (`>= 44px` touch targets, light/dark mode, safe-area padding) for Capacitor Android packaging.
 
 ---
 
 ## 1. Firebase Configuration
 
-All Firebase configuration lives in a single centralized JS module: `src/firebase/config.js` (with `firebaseConfig` and `firestoreDatabaseId` defined directly in JavaScript so you can switch it to `import.meta.env.VITE_FIREBASE_*` from `.env.example` later if desired).
+Firebase client configuration lives in `src/firebase/config.js` (and `firebase-applet-config.json`), targeting:
+- **Project ID**: `iron-ivy-jvc14`
+- **Firestore Database ID**: `ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e`
 
 ---
 
@@ -14,120 +16,108 @@ All Firebase configuration lives in a single centralized JS module: `src/firebas
 
 1. **Enable Email/Password Authentication**
    - Open the [Firebase Console](https://console.firebase.google.com/) and select your project.
-   - Go to **Build → Authentication → Get started**.
-   - Under **Sign-in method**, click **Email/Password**, toggle **Enable** (passwordless email link is not required), and click **Save**.
-   - Do **not** enable Google sign-in; EMS uses Email/Password only.
+   - Go to **Build → Authentication → Sign-in method**, enable **Email/Password**, and click **Save**.
 
-2. **Create Firestore Database**
-   - Go to **Build → Firestore Database** (if not already provisioned).
-   - Ensure the database ID matches `VITE_FIREBASE_FIRESTORE_DATABASE_ID` / `firebase-applet-config.json`.
+2. **Firestore Database & Storage**
+   - Ensure Firestore database `ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e` and Firebase Storage bucket `iron-ivy-jvc14.firebasestorage.app` are active.
 
-3. **Enable Firebase Storage**
-   - Go to **Build → Storage → Get started** and create your default Storage bucket.
-   - Ensure `VITE_FIREBASE_STORAGE_BUCKET` matches your bucket (e.g. `<project-id>.firebasestorage.app`).
-
-4. **Paste Security Rules**
-   - **Firestore Rules**: Open **Firestore Database → Rules**, paste the full contents of `firestore.rules`, and click **Publish**.
-   - **Storage Rules**: Open **Storage → Rules**, paste the full contents of `storage.rules`, and click **Publish**.
-   - *Important for Storage Rules*: If your Firestore database uses `(default)` instead of a named database ID, replace `ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e` inside `storage.rules` with `(default)`.
+3. **Deploy Security Rules**
+   - Using Firebase CLI:
+     ```bash
+     firebase deploy --only firestore:rules,storage
+     ```
+   - Or paste `firestore.rules` into **Firestore Database → Rules** and `storage.rules` into **Storage → Rules** and publish.
+   - *Note for Storage Rules*: `storage.rules` references the named database `ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e`. If you switch to `(default)`, update that path in `storage.rules`.
 
 ---
 
-## 3. Creating the First Super Admin Manually
+## 3. Roles & Permission Model
 
-Because public registration only creates `employee` accounts with `approvalStatus: 'pending'`, create the initial `super_admin` manually once:
+All UI checks, router guards, Firestore rules, and Storage rules share the same **Role + Permission + Scope** model defined in `src/lib/permissions.js` and mirrored in `firestore.rules` and `storage.rules`.
 
-1. In **Firebase Console → Authentication → Users**, click **Add user**.
-2. Enter the admin email (e.g. `admin@ems.gov.bd`) and a strong password, then copy the generated **User UID**.
-3. Open **Firestore Database → Data** and create the global settings document:
-   - Collection: `settings`, Document ID: `app`
-   - Fields:
-     - `registrationOpen`: `true` (boolean)
-     - `updatedBy`: `<ADMIN_UID>` (string)
-     - `updatedAt`: current timestamp
-4. Create the Head Office document in `offices`:
-   - Collection: `offices`, Document ID: `head-office` (or auto ID)
-   - Fields:
-     - `name`: `"Directorate of Non-Formal Education (Head Office)"`
-     - `address`: `"232/1 Tejgaon Industrial Area, Dhaka 1208"`
-     - `level`: `"head"`
-     - `parentOfficeId`: `null`
-     - `lat`: `23.7654` (number)
-     - `lng`: `90.3995` (number)
-     - `geofenceRadiusMeters`: `150` (number)
-     - `startTime`: `"09:00"` (string)
-     - `graceMinutes`: `15` (number)
-     - `endTime`: `"17:00"` (string)
-     - `createdAt`: timestamp
-     - `updatedAt`: timestamp
-5. Create the Super Admin user profile in `users`:
-   - Collection: `users`, Document ID: `<ADMIN_UID>` (must match Auth UID)
-   - Fields:
-     - `uid`: `<ADMIN_UID>`
-     - `name`: `"System Administrator"`
-     - `designation`: `"System Admin"`
-     - `address`: `"Dhaka"`
-     - `mobile`: `"01700000000"`
-     - `email`: `"admin@ems.gov.bd"`
-     - `officeId`: `"head-office"`
-     - `districtOfficeId`: `""`
-     - `joiningDate`: `"2026-01-01"`
-     - `status`: `"active"`
-     - `resignationDate`: `null`
-     - `profilePhotoPath`: `""`
-     - `role`: `"super_admin"`
-     - `approvalStatus`: `"approved"`
-     - `boundDeviceId`: `null`
-     - `createdAt`: timestamp
-     - `updatedAt`: timestamp
-6. Sign in at `#/login` with that email and password.
+### Canonical Roles (`ROLES`)
 
----
+| Key (`users/{uid}.role`) | Label | Rank | Default Scope | Notes |
+| --- | --- | --- | --- | --- |
+| `super_admin` | Super Admin | `100` | `all` | Technical administrator (`offices`, `users`, `holidays`, `settings`, `audit`, photo purge). **Read-only on business workflows** (cannot check in, settle attendance, apply/review leave/field duty, or create reports). |
+| `director_general` | Director General | `90` | `all` | Read-only oversight on attendance, reports, users, and audit logs. Reviews leave requests of `assistant_director` accounts. |
+| `head_office_officer` | Head Office Officer | `80` | `all` | Read-only oversight on attendance, reports, and users. |
+| `assistant_director` | Assistant Director | `60` | `subtree` | Heads a district office + child upazila offices + `additionalOfficeIds`. Settles attendance, reviews `employee`/`unfeo` leave & field duty, manages lower-rank staff in subtree, creates monthly reports, views subtree audit logs. |
+| `unfeo` | UNFEO | `40` | `office` | Heads an upazila office (`officeId` + `additionalOfficeIds`). Views office attendance & selfies, approves `employee` leaves only, approves/resets device for `employee` staff in office, creates office monthly reports. |
+| `employee` | Employee | `10` | `self` | Self attendance check-in/out, self attendance history, self leave & field duty applications. |
 
-## 4. Seed Instructions (Three-Level Hierarchy)
+### Legacy Compatibility (`LEGACY_ROLE_MAP`)
 
-Once signed in as `super_admin`:
+Legacy role keys remain mapped during migration via `normalizeRole()` in `src/lib/permissions.js` and `firestore.rules` / `storage.rules`:
+- `head_office` → `director_general`
+- `district_officer` → `assistant_director`
+- `office_head` → `unfeo`
 
-1. Go to **Offices** (`#/admin/offices`) and create:
-   - **Head Office**: Level `head` (if not created manually).
-   - **District Office**: Level `district`, Parent Office = Head Office, coordinates & radius (default `100m`), times (`09:00`, grace `15`, `17:00`).
-   - **Upazila Office**: Level `upazila`, Parent Office = District Office, coordinates & radius.
-2. Go to **Holidays** (`#/admin/holidays`) and seed official government holidays (Fridays & Saturdays are automatically treated as weekly off days).
-3. Go to **Users & Devices** (`#/admin/users`) to create or approve:
-   - `district_officer` assigned to the District Office.
-   - `office_head` assigned to an Upazila Office.
-   - `head_office` (DG) assigned to the Head Office.
-   - `employee` accounts (or let staff register publicly on `#/register` while `registrationOpen` is `true`, then approve them from the Super Admin dashboard).
+### Permissions Matrix (`PERMISSIONS`)
+
+| Permission | `employee` | `unfeo` | `assistant_director` | `head_office_officer` | `director_general` | `super_admin` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `attendance.checkin` | `self` | `self` | `self` | `self` | `self` | — |
+| `attendance.view` | `self` | `office` | `subtree` | `all` | `all` | `all` |
+| `attendance.settle` | — | — | `subtree` | — | — | — |
+| `attendance.photo.view` | — | `office` | `subtree` | — | — | `all` |
+| `attendance.photo.purge` | — | — | — | — | — | `all` |
+| `leave.apply` | `self` | `self` | `self` | `self` | `self` | — |
+| `fieldduty.apply` | `self` | `self` | `self` | `self` | `self` | — |
+| `leave.review` | — | `office` (`employee` only) | `subtree` (`employee`/`unfeo`) | — | `all` (`assistant_director` only) | — |
+| `fieldduty.review` | — | — | `subtree` (`employee`/`unfeo`) | — | — | — |
+| `report.create` | — | `office` | `subtree` | — | — | — |
+| `report.view` | — | `office` | `subtree` | `all` | `all` | `all` |
+| `user.view` | — | `office` | `subtree` | `all` | `all` | `all` |
+| `user.approve` | — | `office` | `subtree` | — | — | `all` |
+| `user.resetDevice` | — | `office` | `subtree` | — | — | `all` |
+| `user.edit` | — | — | `subtree` | — | — | `all` |
+| `user.role.assign` | — | — | `subtree` (lower rank only) | — | — | `all` |
+| `user.delete` | — | — | — | — | — | `all` (non-`super_admin` only) |
+| `office.manage` | — | — | — | — | — | `all` |
+| `holiday.manage` | — | — | — | — | — | `all` |
+| `settings.manage` | — | — | — | — | — | `all` |
+| `audit.view` | — | — | `subtree` | — | `all` | `all` |
+
+### How to Edit Role Permissions at Runtime or Add a New Role
+
+1. **Runtime Role Permission Manager (`#/admin/permissions`)**:
+   - Super Admins can customize any role's permission grants and scopes (`Denied`, `Self`, `Office`, `Subtree`, `All`) directly inside the app via **Admin → Role Permissions** (`#/admin/permissions`).
+   - Changes are saved to `settings/permissions` in Firestore, synced live to all signed-in clients via `onSnapshot`, audited in `auditLogs` (`ROLE_PERMISSIONS_UPDATED`), and enforced immediately by `firestore.rules` and `storage.rules`.
+   - `super_admin`'s `settings.manage` grant is locked to `all` in both the UI and Firestore rules to prevent accidental admin lockout.
+2. **Edit Built-in Defaults**: Change the single role line inside `DEFAULT_PERMISSIONS` in `src/lib/permissions.js`, then mirror the same fallback in `defaultPermScope()` inside `firestore.rules` (and `defaultStoragePermScope()` in `storage.rules` for photo/profile permissions).
+3. **Add a Role**:
+   - Add the role object (`key`, `label`, `rank`, `defaultScope`) to `ROLES` in `src/lib/permissions.js` and grant desired entries in `DEFAULT_PERMISSIONS`.
+   - Add its rank to `rankOf()` and allowed role enum in `isValidUser()` / `isValidPermissionConfig()` inside `firestore.rules` (and `storage.rules` if needed), plus `firebase-blueprint.json`.
+4. **Run tests & lint** (`npm test && npm run lint`) and deploy updated rules.
 
 ---
 
-## 5. Security Rules Explained
+## 4. Migrating Legacy Roles in Existing Firestore Data
 
-### `firestore.rules`
-- **Default Deny**: Top-level `match /{document=**}` denies all reads/writes unless explicitly matched.
-- **Role & Approval Gate**: Self-registration on `users/{uid}` is allowed **only** when `settings/app.registrationOpen == true`, and strictly enforces `role == 'employee'` and `approvalStatus == 'pending'`. Unapproved or resigned users cannot create attendance, leaves, or field duties.
-- **Temporal & Device Integrity**: Attendance creation (`attendance/{uid}_{yyyy-mm-dd}`) enforces `checkIn.time == request.time` (Firestore server clock), `checkIn.accuracy <= 50`, and `checkIn.deviceId == users/{uid}.boundDeviceId`. Check-out enforces `checkOut.time == request.time`, requires an existing `checkIn`, and allows updating only `checkOut` and `updatedAt`.
-- **Hierarchy Enforcement**:
-  - `employee`: reads/creates only own attendance, leaves, and field duties.
-  - `office_head`: read-only access to own `officeId`.
-  - `district_officer`: reads/settles attendance and approves leaves/field duties for own `officeId` and child upazila offices (`districtOfficeId == officer.officeId`), and creates monthly `reports`.
-  - `head_office`: read-only access to `reports`.
-  - `super_admin`: manages `offices`, `users`, `holidays`, `settings/app`, and 15-day old photo cleanup.
-- **Append-Only Audit Trail**: `auditLogs` allows `create` with `actorUid == request.auth.uid` and `timestamp == request.time`, while `update` and `delete` are unconditionally `false`.
+Run the idempotent migration script (`scripts/migrate-roles.mjs`) with a service account:
 
-### `storage.rules`
-- **`attendance/{uid}/{fileName}`**: Employees can upload (`create`, `update`) JPEG selfies (`<= 2MB`) **only** to their own `attendance/{uid}/` folder and cannot read other users' selfies. Only the governing `district_officer` and `super_admin` can read or delete attendance selfies.
-- **`profiles/{fileName}`**: Permanent profile photos (`profiles/{uid}.jpg`) are writable only by the owner (`fileName == request.auth.uid + '.jpg'`) or `super_admin`, and are never removed by settlement or 15-day cleanup.
+```bash
+# 1. Preview changes safely (dry-run mode, no writes)
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/serviceAccount.json node scripts/migrate-roles.mjs
+
+# 2. Apply migrations and append auditLogs entries
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/serviceAccount.json node scripts/migrate-roles.mjs --apply
+```
+
+Alternatively, pass inline JSON via `FIREBASE_SERVICE_ACCOUNT_JSON`.
 
 ---
 
-## 6. Local Development & Capacitor Build
+## 5. Local Development, Testing & Capacitor Build
 
 ```bash
 npm install
-npm run dev      # Vite dev server on port 3000
-npm run lint     # Validate Firestore/Storage rules & JS syntax
-npm run build    # Production bundle in dist/
+npm run dev         # Vite dev server on port 3000
+npm run lint        # Validate firestore.rules, storage.rules & JS syntax
+npm test            # Unit tests for permissions, scopes & hierarchy chains
+npm run test:rules  # Firestore & Storage rules tests (requires Java 17+ & Firebase Emulator)
+npm run build       # Production bundle in dist/
 ```
 
 For Capacitor Android wrapping, build `dist/` and sync into your Capacitor Android project with `CAMERA`, `ACCESS_FINE_LOCATION`, and `ACCESS_COARSE_LOCATION` permissions declared in `AndroidManifest.xml`.

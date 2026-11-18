@@ -6,12 +6,15 @@ import {
 } from 'firebase/auth';
 import {
   collection,
-  getDocs,
-  getDoc,
+  deleteDoc,
   doc,
+  getDoc,
+  getDocs,
+  query,
+  serverTimestamp,
   setDoc,
   updateDoc,
-  serverTimestamp
+  where
 } from 'firebase/firestore';
 import {
   CheckCircle2,
@@ -24,6 +27,7 @@ import {
   X
 } from 'lucide-react';
 import AppShell from '../AppShell.jsx';
+import ConfirmSheet from '../ConfirmSheet.jsx';
 import UserCard from './UserCard.jsx';
 import UserTable from './UserTable.jsx';
 import UserDetailSheet from './UserDetailSheet.jsx';
@@ -41,6 +45,11 @@ import {
 import { useData } from '../../context/DataContext.jsx';
 import { uploadImageSafe } from '../../utils/storageUpload.js';
 import { getTodayDhaka } from '../../utils/dhakaTime.js';
+import {
+  ROLES,
+  getPermissionScope,
+  getUserOfficeScopeIds
+} from '../../lib/permissions.js';
 
 function buildCreateTaskList() {
   return [
@@ -66,8 +75,13 @@ function buildLinkTaskList(linkMethod) {
   ];
 }
 
+function supportsAdditionalCharge(role) {
+  const scope = getPermissionScope({ role, approvalStatus: 'approved', status: 'active' }, 'report.create');
+  return scope === 'subtree' || scope === 'office';
+}
+
 export default function UsersPage() {
-  const { profile, offices, computeDistrictOfficeId } = useAuth();
+  const { profile, effectiveAuthUser, offices, computeDistrictOfficeId, can, permissionScope } = useAuth();
   const { logAudit } = useData();
 
   const [loading, setLoading] = useState(true);
@@ -83,6 +97,7 @@ export default function UsersPage() {
   const [formMode, setFormMode] = useState('create'); // 'create' | 'link' | 'edit'
   const [submitting, setSubmitting] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState(null);
 
   const [sheetTasks, setSheetTasks] = useState([]);
   const [sheetFeedbackSummary, setSheetFeedbackSummary] = useState('');
@@ -91,6 +106,10 @@ export default function UsersPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [toastMsg, setToastMsg] = useState('');
   const toastTimerRef = useRef(null);
+
+  const userViewScope = permissionScope('user.view');
+  const editScope = permissionScope('user.edit');
+  const canCreateOrLinkUsers = editScope === 'all';
 
   const showToast = useCallback((msg) => {
     setToastMsg(msg);
@@ -112,17 +131,48 @@ export default function UsersPage() {
   );
 
   const loadUsers = useCallback(async () => {
+    if (!userViewScope || !effectiveAuthUser) {
+      setUsers([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    setErrorMsg('');
     try {
-      const snap = await withTimeout(
-        getDocs(collection(db, 'users')),
-        15000,
-        'ব্যবহারকারী তালিকা লোড করতে সময় বেশি লাগছে।'
-      );
+      let list = [];
+      if (userViewScope === 'all') {
+        const snap = await withTimeout(
+          getDocs(collection(db, 'users')),
+          15000,
+          'ব্যবহারকারী তালিকা লোড করতে সময় বেশি লাগছে।'
+        );
+        list = snap.docs.map((d) => ({ uid: d.id, id: d.id, ...d.data() }));
+      } else {
+        const scopeIds = getUserOfficeScopeIds(effectiveAuthUser);
+        if (scopeIds.length > 0) {
+          const queries = [];
+          for (const oid of scopeIds) {
+            queries.push(getDocs(query(collection(db, 'users'), where('officeId', '==', oid))));
+            if (userViewScope === 'subtree') {
+              queries.push(getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', oid))));
+            }
+          }
+          const snaps = await withTimeout(
+            Promise.all(queries),
+            15000,
+            'ব্যবহারকারী তালিকা লোড করতে সময় বেশি লাগছে।'
+          );
+          const map = new Map();
+          for (const snap of snaps) {
+            for (const d of snap.docs) {
+              map.set(d.id, { uid: d.id, id: d.id, ...d.data() });
+            }
+          }
+          list = Array.from(map.values());
+        }
+      }
       setUsers(
-        snap.docs
-          .map((d) => ({ uid: d.id, id: d.id, ...d.data() }))
-          .sort((a, b) => (a.name || a.email || a.id || '').localeCompare(b.name || b.email || b.id || ''))
+        list.sort((a, b) => (a.name || a.email || a.id || '').localeCompare(b.name || b.email || b.id || ''))
       );
     } catch (err) {
       setErrorMsg('ব্যবহারকারী তালিকা লোড করা যায়নি।');
@@ -130,7 +180,7 @@ export default function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [userViewScope, effectiveAuthUser]);
 
   useEffect(() => {
     loadUsers();
@@ -218,7 +268,7 @@ export default function UsersPage() {
   };
 
   const createUserDirectly = async (newUser, newPhotoFile) => {
-    if (submitting) return { ok: false };
+    if (submitting || !canCreateOrLinkUsers) return { ok: false };
 
     let tasks = buildCreateTaskList();
     const updateTask = (id, status, detail = '') => {
@@ -303,7 +353,7 @@ export default function UsersPage() {
       updateTask('write', 'running', `Saving users/${targetUid}...`);
       const districtOfficeId = computeDistrictOfficeId(newUser.officeId);
       const additionalOfficeIds =
-        newUser.role === 'district_officer' && Array.isArray(newUser.additionalOfficeIds)
+        supportsAdditionalCharge(newUser.role) && Array.isArray(newUser.additionalOfficeIds)
           ? Array.from(new Set(newUser.additionalOfficeIds.filter((id) => id && id !== newUser.officeId))).slice(0, 20)
           : [];
       try {
@@ -353,7 +403,9 @@ export default function UsersPage() {
             newValue: `${trimmedName} (${newUser.role})`,
             reason: recoveredFromAuth
               ? 'Created missing Firestore profile for existing Auth email'
-              : 'Direct user creation by Super Admin'
+              : 'Direct user creation by Super Admin',
+            officeId: newUser.officeId || '',
+            districtOfficeId
           }),
           10000,
           'Audit log timed out'
@@ -392,7 +444,7 @@ export default function UsersPage() {
   };
 
   const createProfileForExistingAuth = async (linkForm, linkPhotoFile) => {
-    if (submitting) return { ok: false };
+    if (submitting || !canCreateOrLinkUsers) return { ok: false };
 
     let tasks = buildLinkTaskList(linkForm.linkMethod);
     const updateTask = (id, status, detail = '') => {
@@ -501,7 +553,7 @@ export default function UsersPage() {
       updateTask('write', 'running', `Writing users/${targetUid}...`);
       const districtOfficeId = computeDistrictOfficeId(linkForm.officeId);
       const additionalOfficeIds =
-        linkForm.role === 'district_officer' && Array.isArray(linkForm.additionalOfficeIds)
+        supportsAdditionalCharge(linkForm.role) && Array.isArray(linkForm.additionalOfficeIds)
           ? Array.from(new Set(linkForm.additionalOfficeIds.filter((id) => id && id !== linkForm.officeId))).slice(0, 20)
           : [];
       try {
@@ -549,7 +601,9 @@ export default function UsersPage() {
             targetCollection: 'users',
             targetId: targetUid,
             newValue: `${trimmedName} (${linkForm.role}, ${linkForm.approvalStatus})`,
-            reason: `Created Firestore profile for existing Auth user via ${linkForm.linkMethod}`
+            reason: `Created Firestore profile for existing Auth user via ${linkForm.linkMethod}`,
+            officeId: linkForm.officeId || '',
+            districtOfficeId
           }),
           10000,
           'Audit log timed out'
@@ -587,7 +641,7 @@ export default function UsersPage() {
     }
   };
 
-  const updateUserField = async (u, patch, toastText) => {
+  const updateUserField = async (u, patch, toastText, actionName = 'USER_UPDATED') => {
     setErrorMsg('');
     const targetUid = u.uid || u.id;
     if (!targetUid) {
@@ -597,20 +651,19 @@ export default function UsersPage() {
     setActionBusy(true);
     try {
       const payload = {
-        ...(u.status ? {} : { status: 'active' }),
-        ...(u.role ? {} : { role: 'employee' }),
-        ...(u.approvalStatus ? {} : { approvalStatus: 'approved' }),
         ...patch,
         updatedAt: serverTimestamp()
       };
       await updateDoc(doc(db, 'users', targetUid), payload);
       await logAudit({
         actor: profile,
-        action: 'USER_UPDATED',
+        action: actionName,
         targetCollection: 'users',
         targetId: targetUid,
         newValue: JSON.stringify(patch),
-        reason: 'Super admin user update'
+        reason: 'Scoped administrative update',
+        officeId: patch.officeId ?? u.officeId ?? '',
+        districtOfficeId: patch.districtOfficeId ?? u.districtOfficeId ?? ''
       });
       await loadUsers();
       showToast(toastText || `${u.name || u.email || targetUid}-এর তথ্য আপডেট হয়েছে।`);
@@ -625,44 +678,103 @@ export default function UsersPage() {
   };
 
   const onStatusChange = async (u, nextStatus) => {
+    if (!can('user.edit', { uid: u.uid || u.id, role: u.role, officeId: u.officeId, districtOfficeId: u.districtOfficeId })) {
+      return;
+    }
     await updateUserField(
       u,
       {
         status: nextStatus,
         resignationDate: nextStatus === 'resigned' ? u.resignationDate || getTodayDhaka() : null
       },
-      nextStatus === 'active' ? 'User activated' : 'User deactivated'
+      nextStatus === 'active' ? 'User activated' : 'User deactivated',
+      nextStatus === 'active' ? 'USER_ACTIVATED' : 'USER_DEACTIVATED'
     );
   };
 
   const resetBoundDevice = async (u) => {
-    await updateUserField(u, { boundDeviceId: null }, 'Bound device reset');
+    if (!can('user.resetDevice', { uid: u.uid || u.id, role: u.role, officeId: u.officeId, districtOfficeId: u.districtOfficeId })) {
+      return;
+    }
+    await updateUserField(u, { boundDeviceId: null }, 'Bound device reset', 'DEVICE_RESET');
   };
 
   const approveUser = async (u) => {
-    await updateUserField(u, { approvalStatus: 'approved' }, 'User approved');
+    if (!can('user.approve', { uid: u.uid || u.id, role: u.role, officeId: u.officeId, districtOfficeId: u.districtOfficeId })) {
+      return;
+    }
+    await updateUserField(u, { approvalStatus: 'approved' }, 'User approved', 'USER_APPROVED');
+  };
+
+  const executeDeleteUser = async () => {
+    const target = confirmDeleteUser;
+    setConfirmDeleteUser(null);
+    if (!target || !can('user.delete', target)) return;
+
+    const targetUid = target.uid || target.id;
+    setActionBusy(true);
+    setErrorMsg('');
+    try {
+      await deleteDoc(doc(db, 'users', targetUid));
+      await logAudit({
+        actor: profile,
+        action: 'USER_DELETED',
+        targetCollection: 'users',
+        targetId: targetUid,
+        oldValue: `${target.name || target.email} (${target.role})`,
+        reason: 'Deleted user profile',
+        officeId: target.officeId || '',
+        districtOfficeId: target.districtOfficeId || ''
+      });
+      setDetailOpen(false);
+      setSelectedUserId(null);
+      await loadUsers();
+      showToast(`${target.name || target.email || targetUid} deleted.`);
+    } catch (err) {
+      setErrorMsg('ব্যবহারকারী মুছে ফেলা যায়নি।');
+      handleFirestoreError(err, OperationType.DELETE, `users/${targetUid}`);
+    } finally {
+      setActionBusy(false);
+    }
   };
 
   const saveUserEdits = async (u, formValues) => {
     if (submitting) return { ok: false };
+    const targetScopeObj = {
+      uid: u.uid || u.id,
+      role: u.role,
+      officeId: u.officeId || '',
+      districtOfficeId: u.districtOfficeId || ''
+    };
+    if (!can('user.edit', targetScopeObj)) {
+      return { ok: false, error: 'You do not have permission to edit this user.' };
+    }
+    if (formValues.role !== u.role) {
+      const canAssign = can('user.role.assign', {
+        uid: u.uid || u.id,
+        currentRole: u.role,
+        newRole: formValues.role,
+        officeId: formValues.officeId || u.officeId || '',
+        districtOfficeId: computeDistrictOfficeId(formValues.officeId || u.officeId || '')
+      });
+      if (!canAssign) {
+        return { ok: false, error: 'You do not have permission to assign this role.' };
+      }
+    }
+
     setSubmitting(true);
     try {
       const officeId = formValues.officeId || '';
       const districtOfficeId = computeDistrictOfficeId(officeId);
-      const additionalOfficeIds =
-        formValues.role === 'district_officer' && Array.isArray(formValues.additionalOfficeIds)
-          ? Array.from(new Set(formValues.additionalOfficeIds.filter((id) => id && id !== officeId))).slice(0, 20)
-          : [];
       const patch = {
         name: formValues.name.trim(),
         designation: formValues.designation.trim(),
         mobile: formValues.mobile.trim(),
         officeId,
         districtOfficeId,
-        additionalOfficeIds,
         address: formValues.address.trim(),
         joiningDate: formValues.joiningDate,
-        role: formValues.role,
+        role: formValues.role || ROLES.employee.key,
         status: formValues.status,
         resignationDate:
           formValues.status === 'resigned'
@@ -670,7 +782,13 @@ export default function UsersPage() {
             : null,
         approvalStatus: formValues.approvalStatus
       };
-      const ok = await updateUserField(u, patch, 'Changes saved');
+      if (canCreateOrLinkUsers) {
+        patch.additionalOfficeIds =
+          supportsAdditionalCharge(formValues.role) && Array.isArray(formValues.additionalOfficeIds)
+            ? Array.from(new Set(formValues.additionalOfficeIds.filter((id) => id && id !== officeId))).slice(0, 20)
+            : [];
+      }
+      const ok = await updateUserField(u, patch, 'Changes saved', 'USER_EDITED');
       if (ok) {
         setFormSheetOpen(false);
         return { ok: true };
@@ -727,27 +845,30 @@ export default function UsersPage() {
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
               {users.length} staff accounts
+              {userViewScope !== 'all' && ' (Scoped)'}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={openLinkSheet}
-              className="min-h-[44px] px-4 py-2.5 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-            >
-              <Link2 className="w-4 h-4 shrink-0" />
-              <span>Link Auth user</span>
-            </button>
-            <button
-              type="button"
-              onClick={openCreateSheet}
-              className="min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center gap-2 shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-            >
-              <UserPlus className="w-4 h-4 shrink-0" />
-              <span>New user</span>
-            </button>
-          </div>
+          {canCreateOrLinkUsers && (
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={openLinkSheet}
+                className="min-h-[44px] px-4 py-2.5 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+              >
+                <Link2 className="w-4 h-4 shrink-0" />
+                <span>Link Auth user</span>
+              </button>
+              <button
+                type="button"
+                onClick={openCreateSheet}
+                className="min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center gap-2 shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+              >
+                <UserPlus className="w-4 h-4 shrink-0" />
+                <span>New user</span>
+              </button>
+            </div>
+          )}
         </section>
 
         {/* Search, Filter Chips & 720px+ Cards/Table Switch */}
@@ -933,6 +1054,7 @@ export default function UsersPage() {
         onResetDevice={resetBoundDevice}
         onToggleStatus={onStatusChange}
         onApprove={approveUser}
+        onDelete={can('user.delete') ? (u) => setConfirmDeleteUser(u) : undefined}
       />
 
       {/* Create / Link / Stacked Edit Bottom Sheet */}
@@ -949,6 +1071,16 @@ export default function UsersPage() {
         onCreateSubmit={createUserDirectly}
         onLinkSubmit={createProfileForExistingAuth}
         onEditSubmit={saveUserEdits}
+      />
+
+      <ConfirmSheet
+        open={Boolean(confirmDeleteUser)}
+        title="Delete User Profile"
+        message={`Are you sure you want to delete ${confirmDeleteUser?.name || confirmDeleteUser?.email || 'this user'}? This removes their Firestore users document.`}
+        confirmLabel="Delete User"
+        danger={true}
+        onConfirm={executeDeleteUser}
+        onCancel={() => setConfirmDeleteUser(null)}
       />
 
       {/* Toast Notification */}

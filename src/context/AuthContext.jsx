@@ -15,12 +15,26 @@ import {
   query,
   where,
   getDocs,
+  onSnapshot,
   serverTimestamp
 } from 'firebase/firestore';
 import { ref as storageRef, getDownloadURL } from 'firebase/storage';
 import { auth, db, storage, OperationType, handleFirestoreError, withTimeout } from '../firebase/config.js';
 import { uploadImageSafe } from '../utils/storageUpload.js';
 import { getLocalDeviceId } from '../utils/device.js';
+import {
+  ROLES,
+  can as canCheck,
+  canReview as canReviewCheck,
+  assignableRoles as getAssignableRoles,
+  getRoleMeta,
+  getRoleLabel,
+  normalizeRole,
+  getHomePathForUser,
+  canSelectMultipleOffices,
+  getPermissionScope,
+  setPermissionOverrides
+} from '../lib/permissions.js';
 
 const AuthContext = createContext(null);
 
@@ -77,19 +91,59 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState('');
   const [localDeviceId] = useState(() => getLocalDeviceId());
   const [deviceMismatch, setDeviceMismatch] = useState(false);
+  const [permissionOverrides, setPermissionOverridesState] = useState({});
+  const [permissionsMeta, setPermissionsMeta] = useState({ updatedAt: null, updatedByName: '' });
 
   const officesRef = useRef([]);
   officesRef.current = offices;
 
   const isAuthenticated = !!firebaseUser && !!profile;
   const isApproved = profile?.approvalStatus === 'approved' && profile?.status === 'active';
-  const userRole = profile?.role || null;
   const isBootstrapSuperAdmin = useMemo(
     () =>
       !!firebaseUser &&
       firebaseUser.emailVerified === true &&
       BOOTSTRAP_SUPER_ADMIN_EMAILS.includes((firebaseUser.email || '').toLowerCase()),
     [firebaseUser]
+  );
+
+  const normalizedRole = useMemo(
+    () => (isBootstrapSuperAdmin ? ROLES.super_admin.key : normalizeRole(profile?.role)),
+    [isBootstrapSuperAdmin, profile?.role]
+  );
+  const userRole = normalizedRole;
+  const roleMeta = useMemo(() => getRoleMeta(normalizedRole), [normalizedRole]);
+  const roleLabel = useMemo(() => getRoleLabel(normalizedRole), [normalizedRole]);
+
+  const effectiveAuthUser = useMemo(() => {
+    if (!profile) return null;
+    if (!isBootstrapSuperAdmin) return profile;
+    return {
+      ...profile,
+      role: ROLES.super_admin.key,
+      approvalStatus: 'approved',
+      status: 'active'
+    };
+  }, [profile, isBootstrapSuperAdmin]);
+
+  const can = useCallback(
+    (permission, target) => canCheck(effectiveAuthUser, permission, target, permissionOverrides),
+    [effectiveAuthUser, permissionOverrides]
+  );
+
+  const canReview = useCallback(
+    (applicant, kind = 'leave') => canReviewCheck(effectiveAuthUser, applicant, kind, permissionOverrides),
+    [effectiveAuthUser, permissionOverrides]
+  );
+
+  const permissionScope = useCallback(
+    (permission) => getPermissionScope(effectiveAuthUser, permission, permissionOverrides),
+    [effectiveAuthUser, permissionOverrides]
+  );
+
+  const assignableRoles = useMemo(
+    () => getAssignableRoles(effectiveAuthUser, permissionOverrides),
+    [effectiveAuthUser, permissionOverrides]
   );
 
   const primaryOffice = useMemo(
@@ -103,8 +157,8 @@ export function AuthProvider({ children }) {
   );
 
   const hasMultipleOffices = useMemo(
-    () => profile?.role === 'district_officer' && assignedOffices.length > 1,
-    [profile?.role, assignedOffices.length]
+    () => canSelectMultipleOffices(effectiveAuthUser, assignedOffices.length, permissionOverrides),
+    [effectiveAuthUser, assignedOffices.length, permissionOverrides]
   );
 
   const activeOfficeAssignment = useMemo(() => {
@@ -130,7 +184,7 @@ export function AuthProvider({ children }) {
     const uid = targetProfile.uid || targetProfile.id;
     const storageKey = uid ? getActiveOfficeStorageKey(uid) : '';
 
-    if (targetProfile.role !== 'district_officer' || assigned.length <= 1) {
+    if (!canSelectMultipleOffices(targetProfile, assigned.length, permissionOverrides)) {
       const singleId = assigned[0]?.id || targetProfile.officeId || '';
       setActiveOfficeId(singleId);
       if (storageKey && singleId) {
@@ -168,7 +222,7 @@ export function AuthProvider({ children }) {
     const nextId = valid ? stored : '';
     setActiveOfficeId(nextId);
     return nextId;
-  }, []);
+  }, [permissionOverrides]);
 
   const selectActiveOffice = useCallback(
     (officeId) => {
@@ -204,32 +258,17 @@ export function AuthProvider({ children }) {
   const getRoleHomePath = useCallback(
     (targetProfile = profile, selectedOfficeOverride) => {
       if (!targetProfile) return '/login';
-      if (targetProfile.approvalStatus !== 'approved') return '/pending';
-      switch (targetProfile.role) {
-        case 'employee':
-          return '/employee';
-        case 'office_head':
-          return '/office-head';
-        case 'district_officer': {
-          const assigned = buildAssignedOffices(targetProfile, officesRef.current);
-          if (assigned.length > 1) {
-            const effectiveId =
-              selectedOfficeOverride !== undefined ? selectedOfficeOverride : activeOfficeId;
-            if (!effectiveId || !assigned.some((item) => item.id === effectiveId)) {
-              return '/select-office';
-            }
-          }
-          return '/district';
-        }
-        case 'head_office':
-          return '/head-office';
-        case 'super_admin':
-          return '/admin';
-        default:
-          return '/login';
-      }
+      const effectiveTarget = isBootstrapSuperAdmin
+        ? { ...targetProfile, role: ROLES.super_admin.key, approvalStatus: 'approved', status: 'active' }
+        : targetProfile;
+      const assigned = buildAssignedOffices(effectiveTarget, officesRef.current);
+      const multi = canSelectMultipleOffices(effectiveTarget, assigned.length, permissionOverrides);
+      const effectiveId =
+        selectedOfficeOverride !== undefined ? selectedOfficeOverride : activeOfficeId;
+      const hasSelectedOffice = !multi || (Boolean(effectiveId) && assigned.some((item) => item.id === effectiveId));
+      return getHomePathForUser(effectiveTarget, hasSelectedOffice);
     },
-    [profile, activeOfficeId]
+    [profile, activeOfficeId, isBootstrapSuperAdmin, permissionOverrides]
   );
 
   const computeDistrictOfficeId = useCallback((officeId) => {
@@ -294,7 +333,8 @@ export function AuthProvider({ children }) {
         id: snap.id,
         email: raw.email || auth.currentUser?.email || '',
         name: raw.name || raw.email || auth.currentUser?.email || 'User',
-        ...raw
+        ...raw,
+        role: normalizeRole(raw.role) || raw.role
       };
 
       if (data.status === 'resigned') {
@@ -337,7 +377,6 @@ export function AuthProvider({ children }) {
     [localDeviceId, syncActiveOfficeFromSession]
   );
 
-  // Keep activeOfficeId in sync if offices or profile update
   useEffect(() => {
     if (!profile || !offices.length) return;
     syncActiveOfficeFromSession(profile, offices, false);
@@ -376,6 +415,38 @@ export function AuthProvider({ children }) {
       unsubscribe();
     };
   }, [fetchPublicBootstrap, loadUserProfile]);
+
+  useEffect(() => {
+    if (!firebaseUser) {
+      setPermissionOverrides({});
+      setPermissionOverridesState({});
+      setPermissionsMeta({ updatedAt: null, updatedByName: '' });
+      return undefined;
+    }
+    const permDocRef = doc(db, 'settings', 'permissions');
+    const unsubscribe = onSnapshot(
+      permDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() || {};
+          const cleaned = setPermissionOverrides(data.overrides || {});
+          setPermissionOverridesState(cleaned);
+          setPermissionsMeta({
+            updatedAt: data.updatedAt || null,
+            updatedByName: data.updatedByName || ''
+          });
+        } else {
+          setPermissionOverrides({});
+          setPermissionOverridesState({});
+          setPermissionsMeta({ updatedAt: null, updatedByName: '' });
+        }
+      },
+      (err) => {
+        console.warn('Permission config listener warning:', err?.code || err?.message);
+      }
+    );
+    return () => unsubscribe();
+  }, [firebaseUser]);
 
   const login = useCallback(
     async (email, password) => {
@@ -514,7 +585,7 @@ export function AuthProvider({ children }) {
           status: form.status,
           resignationDate: form.status === 'resigned' ? form.resignationDate : null,
           profilePhotoPath: '',
-          role: 'employee',
+          role: ROLES.employee.key,
           approvalStatus: 'pending',
           boundDeviceId: null,
           createdAt: serverTimestamp(),
@@ -623,7 +694,7 @@ export function AuthProvider({ children }) {
           status: form.status || 'active',
           resignationDate: form.status === 'resigned' ? form.resignationDate : null,
           profilePhotoPath: '',
-          role: bootstrapAdmin ? 'super_admin' : 'employee',
+          role: bootstrapAdmin ? ROLES.super_admin.key : ROLES.employee.key,
           approvalStatus: bootstrapAdmin ? 'approved' : 'pending',
           boundDeviceId: null,
           createdAt: serverTimestamp(),
@@ -705,8 +776,18 @@ export function AuthProvider({ children }) {
     () => ({
       firebaseUser,
       profile,
+      effectiveAuthUser,
       needsProfileSetup,
       isBootstrapSuperAdmin,
+      normalizedRole,
+      roleMeta,
+      roleLabel,
+      can,
+      canReview,
+      permissionScope,
+      permissionOverrides,
+      permissionsMeta,
+      assignableRoles,
       offices,
       primaryOffice,
       assignedOffices,
@@ -742,8 +823,18 @@ export function AuthProvider({ children }) {
     [
       firebaseUser,
       profile,
+      effectiveAuthUser,
       needsProfileSetup,
       isBootstrapSuperAdmin,
+      normalizedRole,
+      roleMeta,
+      roleLabel,
+      can,
+      canReview,
+      permissionScope,
+      permissionOverrides,
+      permissionsMeta,
+      assignableRoles,
       offices,
       primaryOffice,
       assignedOffices,

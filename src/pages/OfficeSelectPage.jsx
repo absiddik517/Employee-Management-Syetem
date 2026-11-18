@@ -23,6 +23,7 @@ export default function OfficeSelectPage() {
   const navigate = useNavigate();
   const {
     profile,
+    roleLabel,
     offices,
     assignedOffices,
     hasMultipleOffices,
@@ -42,7 +43,7 @@ export default function OfficeSelectPage() {
       navigate('/pending', { replace: true });
       return;
     }
-    if (profile.role !== 'district_officer' || !hasMultipleOffices) {
+    if (!hasMultipleOffices) {
       navigate(getRoleHomePath(profile), { replace: true });
     }
   }, [profile, hasMultipleOffices, getRoleHomePath, navigate]);
@@ -60,7 +61,7 @@ export default function OfficeSelectPage() {
   const handleSelect = (officeId) => {
     const ok = selectActiveOffice(officeId);
     if (ok) {
-      navigate('/district', { replace: true });
+      navigate(getRoleHomePath(profile, officeId), { replace: true });
     }
   };
 
@@ -109,14 +110,14 @@ export default function OfficeSelectPage() {
       <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-10 pb-safe space-y-6">
         <section className="rounded-[22px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-2">
           <div className="text-xs font-semibold text-[#0b6b4f] dark:text-[#4fd1a1]">
-            সহকারী পরিচালক (জেলা কার্যালয় প্যানেল)
+            {roleLabel}
           </div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
             কাজের জন্য অফিস নির্বাচন করুন
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
             স্বাগতম, <span className="font-semibold text-slate-900 dark:text-white">{profile?.name}</span>
-            {profile?.designation ? ` (${profile.designation})` : ''}। আপনার মূল ও অতিরিক্ত দায়িত্বপ্রাপ্ত অফিসগুলোর মধ্যে যেটির হাজিরা যাচাই ও প্রতিবেদন প্রস্তুত করতে চান সেটি নির্বাচন করুন।
+            {profile?.designation ? ` (${profile.designation})` : ''}। আপনার মূল ও অতিরিক্ত দায়িত্বপ্রাপ্ত অফিসগুলোর মধ্যে যেটিতে কাজ করতে চান সেটি নির্বাচন করুন।
           </p>
         </section>
 

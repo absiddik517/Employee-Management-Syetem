@@ -6,10 +6,13 @@ import {
   Edit3,
   Power,
   RotateCcw,
-  Smartphone
+  Smartphone,
+  Trash2
 } from 'lucide-react';
 import BottomSheet from './BottomSheet.jsx';
 import StatusBadge, { getRoleLabel, getUserInitials } from './StatusBadge.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { ROLES, getPermissionScope } from '../../lib/permissions.js';
 
 function formatJoiningDate(val) {
   if (!val) return 'Not set';
@@ -47,8 +50,10 @@ export default function UserDetailSheet({
   onEdit,
   onResetDevice,
   onToggleStatus,
-  onApprove
+  onApprove,
+  onDelete
 }) {
+  const { can } = useAuth();
   const [copiedUid, setCopiedUid] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
 
@@ -74,6 +79,25 @@ export default function UserDetailSheet({
         .filter(Boolean)
     : [];
 
+  const targetScopeObj = {
+    uid,
+    role: user.role,
+    officeId: user.officeId || '',
+    districtOfficeId: user.districtOfficeId || ''
+  };
+  const canEditUser = can('user.edit', targetScopeObj);
+  const canApproveUser = isPending && can('user.approve', targetScopeObj);
+  const canResetDevice = can('user.resetDevice', targetScopeObj);
+  const canDeleteUser = Boolean(onDelete) && can('user.delete', targetScopeObj);
+  const hasAnyAction = canEditUser || canApproveUser || canResetDevice || canDeleteUser;
+
+  const targetReportScope = getPermissionScope(
+    { role: user.role, approvalStatus: 'approved', status: 'active' },
+    'report.create'
+  );
+  const supportsAdditionalCharge =
+    targetReportScope === 'subtree' || targetReportScope === 'office' || additionalOfficeNames.length > 0;
+
   const handleCopyUid = async () => {
     if (!uid || !navigator?.clipboard) return;
     try {
@@ -86,7 +110,7 @@ export default function UserDetailSheet({
   };
 
   const handleResetTap = async () => {
-    if (!hasDevice || busy) return;
+    if (!hasDevice || busy || !canResetDevice) return;
     if (!confirmReset) {
       setConfirmReset(true);
       return;
@@ -97,25 +121,27 @@ export default function UserDetailSheet({
 
   const headerExtra = (
     <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-      <StatusBadge kind="role" value={user.role || 'employee'} />
+      <StatusBadge kind="role" value={user.role || ROLES.employee.key} />
       <StatusBadge kind="status" value={user.status || 'active'} />
       <StatusBadge kind="approval" value={user.approvalStatus || 'pending'} />
     </div>
   );
 
-  const footer = (
+  const footer = hasAnyAction ? (
     <div className="flex flex-wrap items-center gap-2">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => onEdit(user)}
-        className="flex-1 min-w-[130px] min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-      >
-        <Edit3 className="w-4 h-4 shrink-0" />
-        <span>Edit user</span>
-      </button>
+      {canEditUser && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onEdit(user)}
+          className="flex-1 min-w-[130px] min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+        >
+          <Edit3 className="w-4 h-4 shrink-0" />
+          <span>Edit user</span>
+        </button>
+      )}
 
-      {isPending && (
+      {canApproveUser && (
         <button
           type="button"
           disabled={busy}
@@ -127,35 +153,63 @@ export default function UserDetailSheet({
         </button>
       )}
 
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => onToggleStatus(user, isActive ? 'resigned' : 'active')}
-        className="min-h-[44px] px-3.5 py-2.5 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/80 text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-      >
-        <Power className="w-4 h-4 shrink-0" />
-        <span>{isActive ? 'Deactivate' : 'Activate'}</span>
-      </button>
+      {canEditUser && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onToggleStatus(user, isActive ? 'resigned' : 'active')}
+          className="min-h-[44px] px-3.5 py-2.5 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/80 text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+        >
+          <Power className="w-4 h-4 shrink-0" />
+          <span>{isActive ? 'Deactivate' : 'Activate'}</span>
+        </button>
+      )}
 
+      {canResetDevice && (
+        <button
+          type="button"
+          disabled={!hasDevice || busy}
+          onClick={handleResetTap}
+          aria-live="polite"
+          className={`min-h-[44px] px-3.5 py-2.5 rounded-[14px] border text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-45 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+            confirmReset
+              ? 'bg-amber-500 hover:bg-amber-600 border-amber-500 text-slate-950'
+              : 'border-amber-300 dark:border-amber-700/80 bg-amber-50/70 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 hover:bg-amber-100/80 dark:hover:bg-amber-950/50'
+          }`}
+        >
+          <RotateCcw className="w-4 h-4 shrink-0" />
+          <span>
+            {!hasDevice
+              ? 'No device bound'
+              : confirmReset
+              ? 'Tap again to confirm'
+              : 'Reset bound device'}
+          </span>
+        </button>
+      )}
+
+      {canDeleteUser && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onDelete(user)}
+          aria-label="Delete user"
+          className="min-h-[44px] px-3.5 py-2.5 rounded-[14px] border border-rose-300 dark:border-rose-800 bg-rose-50/80 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 hover:bg-rose-100/80 dark:hover:bg-rose-950/50 text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60"
+        >
+          <Trash2 className="w-4 h-4 shrink-0" />
+          <span>Delete</span>
+        </button>
+      )}
+    </div>
+  ) : (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-xs text-slate-500 dark:text-slate-400">Read-only view</span>
       <button
         type="button"
-        disabled={!hasDevice || busy}
-        onClick={handleResetTap}
-        aria-live="polite"
-        className={`min-h-[44px] px-3.5 py-2.5 rounded-[14px] border text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-45 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
-          confirmReset
-            ? 'bg-amber-500 hover:bg-amber-600 border-amber-500 text-slate-950'
-            : 'border-amber-300 dark:border-amber-700/80 bg-amber-50/70 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 hover:bg-amber-100/80 dark:hover:bg-amber-950/50'
-        }`}
+        onClick={onClose}
+        className="min-h-[44px] px-4 py-2 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-semibold text-slate-700 dark:text-slate-200"
       >
-        <RotateCcw className="w-4 h-4 shrink-0" />
-        <span>
-          {!hasDevice
-            ? 'No device bound'
-            : confirmReset
-            ? 'Tap again to confirm'
-            : 'Reset bound device'}
-        </span>
+        Close
       </button>
     </div>
   );
@@ -244,7 +298,7 @@ export default function UserDetailSheet({
                   : 'Pending approval'
               }
             />
-            {(user.role === 'district_officer' || additionalOfficeNames.length > 0) && (
+            {supportsAdditionalCharge && (
               <DetailRow
                 label="Additional charge"
                 value={additionalOfficeNames.length > 0 ? additionalOfficeNames.join(', ') : 'None'}

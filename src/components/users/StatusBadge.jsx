@@ -8,14 +8,7 @@ import {
   UserCheck,
   UserX
 } from 'lucide-react';
-
-const ROLE_LABELS = {
-  employee: 'Employee',
-  office_head: 'Office head',
-  district_officer: 'District officer',
-  head_office: 'Head office',
-  super_admin: 'Super admin'
-};
+import { ROLES, getRoleLabel as resolveRoleLabel, rankOf } from '../../lib/permissions.js';
 
 const STATUS_LABELS = {
   active: 'Active',
@@ -29,7 +22,7 @@ const APPROVAL_LABELS = {
 };
 
 export function getRoleLabel(role) {
-  return ROLE_LABELS[role] || role || 'Employee';
+  return resolveRoleLabel(role);
 }
 
 export function getUserInitials(name, email) {
@@ -51,11 +44,12 @@ export default function StatusBadge({ kind = 'status', value }) {
 
   if (kind === 'role') {
     label = getRoleLabel(normalized);
-    if (normalized === 'super_admin') {
+    const rank = rankOf(normalized);
+    if (rank >= ROLES.super_admin.rank) {
       classes =
         'bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-[#0b6b4f] dark:text-[#4fd1a1] border-[#0b6b4f]/20 dark:border-[#4fd1a1]/30';
       Icon = ShieldCheck;
-    } else if (normalized === 'district_officer' || normalized === 'head_office' || normalized === 'office_head') {
+    } else if (rank >= ROLES.unfeo.rank) {
       classes =
         'bg-slate-100 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-700';
       Icon = UserCog;

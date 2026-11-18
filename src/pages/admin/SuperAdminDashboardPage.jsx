@@ -16,11 +16,14 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useData } from '../../context/DataContext.jsx';
 import { db, OperationType, handleFirestoreError } from '../../firebase/config.js';
 import { isDateOlderThanDays, toBanglaDigits } from '../../utils/dhakaTime.js';
+import { ROLES } from '../../lib/permissions.js';
 
 export default function SuperAdminDashboardPage() {
   const {
     profile,
     offices,
+    assignableRoles,
+    can,
     registrationOpen,
     setRegistrationOpen,
     fetchPublicBootstrap,
@@ -52,13 +55,12 @@ export default function SuperAdminDashboardPage() {
       const users = uSnap.docs.map((d) => ({ uid: d.id, id: d.id, ...d.data() }));
       setPendingUsers(users);
 
-      // Read fresh offices snapshot if needed for fallback default office
       const edits = {};
       for (const u of users) {
         const targetUid = u.uid || u.id;
         edits[targetUid] = {
           officeId: u.officeId || offices[0]?.id || '',
-          role: u.role || 'employee'
+          role: u.role || ROLES.employee.key
         };
       }
       setApprovalEdits(edits);
@@ -80,7 +82,6 @@ export default function SuperAdminDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Ensure edits default officeId if offices loaded slightly after initial pending users
   useEffect(() => {
     if (!offices.length || !pendingUsers.length) return;
     setApprovalEdits((prev) => {
@@ -98,6 +99,7 @@ export default function SuperAdminDashboardPage() {
   }, [offices, pendingUsers]);
 
   const toggleRegistration = async () => {
+    if (!can('settings.manage')) return;
     setTogglingReg(true);
     setErrorMsg('');
     setFeedbackMsg('');
@@ -130,15 +132,18 @@ export default function SuperAdminDashboardPage() {
   const updateEdit = (uid, patch) => {
     setApprovalEdits((prev) => ({
       ...prev,
-      [uid]: { ...(prev[uid] || { officeId: '', role: 'employee' }), ...patch }
+      [uid]: { ...(prev[uid] || { officeId: '', role: ROLES.employee.key }), ...patch }
     }));
   };
 
   const decideUser = async (user, status) => {
+    const targetUid = user.uid || user.id;
+    if (!can('user.approve', { uid: targetUid, role: user.role, officeId: user.officeId, districtOfficeId: user.districtOfficeId })) {
+      return;
+    }
     setErrorMsg('');
     setFeedbackMsg('');
-    const targetUid = user.uid || user.id;
-    const edit = approvalEdits[targetUid] || { officeId: '', role: 'employee' };
+    const edit = approvalEdits[targetUid] || { officeId: '', role: ROLES.employee.key };
     const districtOfficeId = computeDistrictOfficeId(edit.officeId);
     try {
       await updateDoc(doc(db, 'users', targetUid), {
@@ -155,7 +160,9 @@ export default function SuperAdminDashboardPage() {
         targetId: targetUid,
         oldValue: 'pending',
         newValue: `${status} (${edit.role})`,
-        reason: `Super admin ${status} registration`
+        reason: `Admin ${status} registration`,
+        officeId: edit.officeId,
+        districtOfficeId
       });
       setFeedbackMsg(
         `${user.name || user.email || targetUid}-এর অ্যাকাউন্ট ${status === 'approved' ? 'অনুমোদন' : 'বাতিল'} করা হয়েছে।`
@@ -169,6 +176,7 @@ export default function SuperAdminDashboardPage() {
 
   const runPhotoCleanup = async () => {
     setConfirmCleanup(false);
+    if (!can('attendance.photo.purge')) return;
     setCleaningPhotos(true);
     setErrorMsg('');
     setFeedbackMsg('');
@@ -214,6 +222,7 @@ export default function SuperAdminDashboardPage() {
   };
 
   const seedSampleData = async () => {
+    if (!can('office.manage') || !can('holiday.manage') || !can('settings.manage')) return;
     setSeeding(true);
     setErrorMsg('');
     setFeedbackMsg('');
@@ -329,69 +338,94 @@ export default function SuperAdminDashboardPage() {
     <AppShell>
       <div className="space-y-5">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <section className="bg-white rounded-2xl border border-slate-200 p-5 flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-base font-bold text-slate-900 font-display">Public Employee Registration</h2>
-              <p className="text-xs text-slate-500 mt-1">
-                {registrationOpen
-                  ? 'Open: New staff can register and await approval.'
-                  : 'Closed: Register screen displays রেজিস্ট্রেশন বন্ধ আছে.'}
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={registrationOpen}
-              disabled={togglingReg}
-              onClick={toggleRegistration}
-              className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold transition-colors shrink-0 ${
-                registrationOpen
-                  ? 'bg-emerald-700 text-white hover:bg-emerald-800'
-                  : 'bg-slate-200 text-slate-800 hover:bg-slate-300'
-              }`}
-            >
-              {togglingReg ? 'আপডেট হচ্ছে...' : registrationOpen ? 'Open (Turn Off)' : 'Closed (Turn On)'}
-            </button>
-          </section>
+          {can('settings.manage') && (
+            <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">Public Employee Registration</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  {registrationOpen
+                    ? 'Open: New staff can register and await approval.'
+                    : 'Closed: Register screen displays রেজিস্ট্রেশন বন্ধ আছে.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={registrationOpen}
+                disabled={togglingReg}
+                onClick={toggleRegistration}
+                className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold transition-colors shrink-0 ${
+                  registrationOpen
+                    ? 'bg-emerald-700 text-white hover:bg-emerald-800'
+                    : 'bg-slate-200 text-slate-800 hover:bg-slate-300'
+                }`}
+              >
+                {togglingReg ? 'আপডেট হচ্ছে...' : registrationOpen ? 'Open (Turn Off)' : 'Closed (Turn On)'}
+              </button>
+            </section>
+          )}
 
-          <section className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-base font-bold text-slate-900 font-display">
-                অনিষ্পন্ন ১৫ দিনের পুরোনো ছবি: {banglaCount} টি
-              </h2>
-              <p className="text-xs text-slate-500 mt-1">
-                Unsettled attendance selfies older than 15 days eligible for Storage cleanup.
-              </p>
-            </div>
-            <button
-              type="button"
-              disabled={cleaningPhotos || oldUnsettledPhotos.length === 0}
-              onClick={() => setConfirmCleanup(true)}
-              className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-semibold shrink-0 disabled:opacity-50"
-            >
-              {cleaningPhotos ? 'মুছে ফেলা হচ্ছে...' : 'Delete Old Photos'}
-            </button>
-          </section>
+          {can('attendance.photo.purge') && (
+            <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">
+                  অনিষ্পন্ন ১৫ দিনের পুরোনো ছবি: {banglaCount} টি
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Unsettled attendance selfies older than 15 days eligible for Storage cleanup.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={cleaningPhotos || oldUnsettledPhotos.length === 0}
+                onClick={() => setConfirmCleanup(true)}
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-semibold shrink-0 disabled:opacity-50"
+              >
+                {cleaningPhotos ? 'মুছে ফেলা হচ্ছে...' : 'Delete Old Photos'}
+              </button>
+            </section>
+          )}
         </div>
 
-        <section className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-base font-bold text-slate-900 font-display">
-              Seed Bangladesh Office Hierarchy &amp; Holidays
-            </h2>
-            <p className="text-xs text-slate-500 mt-1">
-              Seeds Head Office, District Office, two Upazila Offices, default app settings, and national holidays into Firestore.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={seeding}
-            onClick={seedSampleData}
-            className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold shrink-0 disabled:opacity-60"
-          >
-            {seeding ? 'সিড হচ্ছে...' : 'Seed Sample Offices & Holidays'}
-          </button>
-        </section>
+        {can('settings.manage') && (
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">
+                Role Permissions Manager
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Customize permissions and access scopes (Self, Office, Subtree, All) for any staff role in real time.
+              </p>
+            </div>
+            <a
+              href="#/admin/permissions"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] dark:bg-[#4fd1a1] dark:text-slate-950 text-white text-xs font-semibold inline-flex items-center justify-center shrink-0"
+            >
+              Manage Role Permissions
+            </a>
+          </section>
+        )}
+
+        {can('office.manage') && can('holiday.manage') && (
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">
+                Seed Bangladesh Office Hierarchy &amp; Holidays
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Seeds Head Office, District Office, two Upazila Offices, default app settings, and national holidays into Firestore.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={seeding}
+              onClick={seedSampleData}
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 text-white text-xs font-semibold shrink-0 disabled:opacity-60"
+            >
+              {seeding ? 'সিড হচ্ছে...' : 'Seed Sample Offices & Holidays'}
+            </button>
+          </section>
+        )}
 
         {feedbackMsg && (
           <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
@@ -402,11 +436,11 @@ export default function SuperAdminDashboardPage() {
           <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">{errorMsg}</div>
         )}
 
-        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
+        <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
           <div className="p-4 sm:p-5 flex items-center justify-between gap-2">
             <div>
-              <h3 className="text-base font-bold text-slate-900 font-display">Pending Registration Approval Queue</h3>
-              <p className="text-xs text-slate-500 mt-0.5">
+              <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">Pending Registration Approval Queue</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 Confirm office assignment and set official role before approving
               </p>
             </div>
@@ -422,16 +456,16 @@ export default function SuperAdminDashboardPage() {
           ) : (
             pendingUsers.map((u) => {
               const targetUid = u.uid || u.id;
-              const edit = approvalEdits[targetUid] || { officeId: '', role: 'employee' };
+              const edit = approvalEdits[targetUid] || { officeId: '', role: ROLES.employee.key };
               return (
                 <div key={targetUid} className="p-4 sm:p-5 space-y-3">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <div className="text-sm font-bold text-slate-900">{u.name || u.email || targetUid}</div>
-                      <div className="text-xs text-slate-600">
+                      <div className="text-sm font-bold text-slate-900 dark:text-slate-100">{u.name || u.email || targetUid}</div>
+                      <div className="text-xs text-slate-600 dark:text-slate-300">
                         {u.designation} · {u.email} · {u.mobile}
                       </div>
-                      <div className="text-xs text-slate-500 mt-0.5">
+                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                         Joined {u.joiningDate} · Address: {u.address}
                       </div>
                     </div>
@@ -440,11 +474,11 @@ export default function SuperAdminDashboardPage() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                     <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Confirm Office</label>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">Confirm Office</label>
                       <select
                         value={edit.officeId}
                         onChange={(e) => updateEdit(targetUid, { officeId: e.target.value })}
-                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white"
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs bg-white dark:bg-slate-800"
                       >
                         <option value="" disabled>
                           Select office...
@@ -457,17 +491,17 @@ export default function SuperAdminDashboardPage() {
                       </select>
                     </div>
                     <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Assign Role</label>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">Assign Role</label>
                       <select
                         value={edit.role}
                         onChange={(e) => updateEdit(targetUid, { role: e.target.value })}
-                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white"
+                        className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs bg-white dark:bg-slate-800"
                       >
-                        <option value="employee">Employee</option>
-                        <option value="office_head">Office Head (Upazila)</option>
-                        <option value="district_officer">District Officer</option>
-                        <option value="head_office">Head Office (DG)</option>
-                        <option value="super_admin">Super Admin</option>
+                        {assignableRoles.map((r) => (
+                          <option key={r.key} value={r.key}>
+                            {r.label}
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <div className="flex items-end gap-2">
