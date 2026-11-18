@@ -1,25 +1,31 @@
-export function captureWatermarkedSelfie(videoEl, metadata) {
+function drawWatermarkAndExport(sourceEl, sourceWidth, sourceHeight, metadata, { mirror = false } = {}) {
   return new Promise((resolve, reject) => {
-    if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) {
+    if (!sourceEl || !sourceWidth || !sourceHeight) {
       reject(new Error('ক্যামেরা ফ্রেম প্রস্তুত নয়। অনুগ্রহ করে আবার চেষ্টা করুন।'));
       return;
     }
 
     const maxWidth = 640;
-    const scale = videoEl.videoWidth > maxWidth ? maxWidth / videoEl.videoWidth : 1;
-    const width = Math.round(videoEl.videoWidth * scale);
-    const height = Math.round(videoEl.videoHeight * scale);
+    const scale = sourceWidth > maxWidth ? maxWidth / sourceWidth : 1;
+    const width = Math.round(sourceWidth * scale);
+    const height = Math.round(sourceHeight * scale);
 
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      reject(new Error('ছবি প্রসেস করা যায়নি। আবার চেষ্টা করুন।'));
+      return;
+    }
 
-    // Mirror horizontally for natural front-camera preview consistency
     ctx.save();
-    ctx.translate(width, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(videoEl, 0, 0, width, height);
+    if (mirror) {
+      // Mirror horizontally for natural front-camera preview consistency
+      ctx.translate(width, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(sourceEl, 0, 0, width, height);
     ctx.restore();
 
     // Watermark scrim bar at bottom
@@ -62,5 +68,40 @@ export function captureWatermarkedSelfie(videoEl, metadata) {
       'image/jpeg',
       0.6
     );
+  });
+}
+
+export function captureWatermarkedSelfie(videoEl, metadata) {
+  return drawWatermarkAndExport(
+    videoEl,
+    videoEl?.videoWidth,
+    videoEl?.videoHeight,
+    metadata,
+    { mirror: true }
+  );
+}
+
+export function watermarkImageFromDataUrl(dataUrl, metadata) {
+  return new Promise((resolve, reject) => {
+    if (!dataUrl) {
+      reject(new Error('ছবির ডেটা পাওয়া যায়নি।'));
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      drawWatermarkAndExport(
+        img,
+        img.naturalWidth || img.width,
+        img.naturalHeight || img.height,
+        metadata,
+        { mirror: false }
+      )
+        .then(resolve)
+        .catch(reject);
+    };
+    img.onerror = () => {
+      reject(new Error('নেটিভ ক্যামেরা থেকে প্রাপ্ত ছবি লোড করা যায়নি।'));
+    };
+    img.src = dataUrl;
   });
 }
