@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>EMS: Offices</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap">
+<style>
+:root{--bg:#f3f5f4;--sf:#fff;--sf2:#eff3f1;--tx:#10201b;--mu:#586a63;--bd:#dbe3df;--br:#0b6b4f;--bt:#fff;--tint:#dff0e8;--wb:#fff3dc;--wt:#7a4200;--wd:#efc27a;--ok:#0a6244;--okb:#e0f2e9;--no:#8a2b24;--nob:#fbe8e6;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b110f;--sf:#141c19;--sf2:#1b2622;--tx:#e8f1ed;--mu:#9bb0a7;--bd:#26332e;--br:#4fd1a1;--bt:#05241a;--tint:#173529;--wb:#2a2110;--wt:#f2c46d;--wd:#5a4416;--ok:#6fe0ae;--okb:#12301f;--no:#ffb4ab;--nob:#35171a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0b110f;--sf:#141c19;--sf2:#1b2622;--tx:#e8f1ed;--mu:#9bb0a7;--bd:#26332e;--br:#4fd1a1;--bt:#05241a;--tint:#173529;--wb:#2a2110;--wt:#f2c46d;--wd:#5a4416;--ok:#6fe0ae;--okb:#12301f;--no:#ffb4ab;--nob:#35171a;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:400 15px/1.45 Figtree,system-ui,sans-serif;-webkit-text-size-adjust:100%}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--sf);z-index:10}
+body.lock{overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--br);outline-offset:2px}
+.hd{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;display:flex;align-items:center;gap:8px;padding:6px 12px 6px 16px;background:var(--sf);border-bottom:1px solid var(--bd)}
+.logo{color:var(--br);font-size:21px;font-weight:700;letter-spacing:-.02em}
+.crumb{flex:1;color:var(--mu);font-weight:600}
+.ib{display:inline-grid;place-items:center;width:44px;height:44px;border:0;border-radius:12px;background:none;color:var(--mu)}
+.ib:hover{background:var(--sf2)}
+.ghost{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 10px;border:0;background:none;color:var(--mu);font-weight:600}
+.wrap{max-width:1120px;margin:0 auto;padding:20px 16px 48px}
+.top{display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:flex-end;margin-bottom:16px}
+h1{margin:0;font-size:28px;letter-spacing:-.025em;line-height:1.15}
+.sub{margin:4px 0 0;color:var(--mu)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:0 18px;border-radius:14px;border:1px solid var(--bd);background:var(--sf);color:var(--tx);font-weight:600;text-decoration:none}
+.btn.p{background:var(--br);border-color:var(--br);color:var(--bt)}
+.btn.dg{background:var(--nob);border-color:transparent;color:var(--no)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.wide{width:100%}
+.tools{display:flex;gap:10px;align-items:center}
+.srch{flex:1;display:flex;align-items:center;gap:10px;min-height:48px;padding:0 14px;border:1px solid var(--bd);border-radius:14px;background:var(--sf);color:var(--mu)}
+.srch input{flex:1;min-width:0;border:0;outline:0;background:none;color:var(--tx);font:inherit;font-size:16px}
+.seg{display:none;padding:4px;border-radius:14px;background:var(--sf2);gap:2px}
+.seg button{min-height:40px;padding:0 14px;border:0;border-radius:10px;background:none;color:var(--mu);font-weight:600}
+.seg button[aria-pressed=true]{background:var(--sf);color:var(--tx);box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.chips{display:flex;gap:8px;overflow-x:auto;margin:12px -16px 14px;padding:0 16px;scrollbar-width:none}
+.chip{flex:none;min-height:40px;padding:0 14px;border-radius:99px;border:1px solid var(--bd);background:var(--sf);color:var(--mu);font-weight:600}
+.chip[aria-pressed=true]{background:var(--tint);border-color:transparent;color:var(--br)}
+.chip i{font-style:normal;opacity:.75;margin-left:6px}
+.cards{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.card{display:grid;grid-template-columns:48px 1fr 20px;gap:4px 12px;align-items:center;width:100%;padding:14px;text-align:left;border:1px solid var(--bd);border-radius:18px;background:var(--sf);transition:border-color .15s,transform .15s}
+.card:hover{border-color:var(--br)}.card:active{transform:scale(.985)}
+.card>svg{color:var(--mu)}
+.cm{display:flex;flex-direction:column;gap:2px;min-width:0}.cm b{font-size:16px;line-height:1.3}.cm small{color:var(--mu);font-size:13px}
+.tg{display:flex;flex-wrap:wrap;gap:6px}.cm .tg{margin-top:6px}
+.cf{grid-column:2/-1;display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:6px;padding-top:10px;border-top:1px solid var(--bd);color:var(--mu);font-size:13px}
+.cf span{display:inline-flex;align-items:center;gap:6px}
+.av{display:grid;place-items:center;width:48px;height:48px;border-radius:16px;background:var(--tint);color:var(--br)}
+.av.xl{width:60px;height:60px;border-radius:20px}
+.pl{display:inline-block;padding:3px 10px;border-radius:99px;background:var(--sf2);color:var(--mu);font-size:12px;font-weight:600}
+.pl.ok{background:var(--okb);color:var(--ok)}.pl.wn{background:var(--wb);color:var(--wt)}.pl.br{background:var(--tint);color:var(--br)}
+code{font:12.5px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.tbl{display:none;border:1px solid var(--bd);border-radius:18px;background:var(--sf);overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:820px}
+th{padding:12px 16px;text-align:left;color:var(--mu);font-size:13px;font-weight:600;border-bottom:1px solid var(--bd)}
+td{padding:12px 16px;border-bottom:1px solid var(--bd);vertical-align:middle}
+tbody tr{cursor:pointer}tbody tr:hover{background:var(--sf2)}tbody tr:last-child td{border-bottom:0}
+.who{display:flex;gap:12px;align-items:center}.who .av{width:40px;height:40px;border-radius:14px}
+.who b{display:block;font-weight:600}.who small{color:var(--mu)}
+.empty{padding:40px 0;text-align:center;color:var(--mu)}
+@media(min-width:720px){.seg{display:flex}body[data-view=table] .cards{display:none}body[data-view=table] .tbl{display:block}.wrap{padding:28px 24px 64px}h1{font-size:32px}}
+.ov{position:fixed;inset:0;z-index:20;background:rgba(5,12,9,.5);opacity:0;pointer-events:none;transition:opacity .3s}
+.ov.on{opacity:1;pointer-events:auto}.o2{z-index:30}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:21;margin:0 auto;max-width:560px;max-height:90vh;max-height:90dvh;display:flex;flex-direction:column;background:var(--sf);border-radius:26px 26px 0 0;box-shadow:0 -10px 40px rgba(0,0,0,.25);transform:translateY(105%);visibility:hidden;transition:transform .38s cubic-bezier(.32,.72,0,1),opacity .3s,visibility 0s .38s;transform-origin:50% 100%;outline:0}
+.sheet.on{transform:none;visibility:visible;transition:transform .38s cubic-bezier(.32,.72,0,1),opacity .3s}
+.sheet.under{transform:scale(.94) translateY(-14px);opacity:.55}
+.s2{z-index:31}
+.grab{flex:none;display:grid;place-items:center;height:28px;touch-action:none;cursor:grab}
+.grab i{width:40px;height:5px;border-radius:9px;background:var(--bd)}
+.sb{flex:1;overflow-y:auto;padding:0 20px 12px;overscroll-behavior:contain}
+.dh{display:flex;gap:14px;align-items:center;margin-bottom:14px}
+.dh>div{flex:1;min-width:0}.dh h2{margin:0;font-size:21px;line-height:1.2}.dh p{margin:2px 0 0;color:var(--mu);font-size:14px}
+h4{margin:20px 0 8px;font-size:14px;font-weight:600;color:var(--mu)}
+.grp{border:1px solid var(--bd);border-radius:16px;overflow:hidden}
+.rw{display:flex;gap:12px;align-items:center;min-height:48px;padding:8px 14px}
+.rw+.rw{border-top:1px solid var(--bd)}
+.rw>span{flex:none;width:96px;color:var(--mu);font-size:14px}
+.rw>b,.rw>code{flex:1;min-width:0;text-align:right;overflow-wrap:anywhere}.rw>b{font-weight:600;font-size:14px}
+.rw .ib{width:36px;height:36px;margin:-4px -6px -4px 0}
+.gfp{margin:10px 0 14px;padding:12px;border:1px solid var(--bd);border-radius:16px;background:var(--sf2)}
+.gfp .gh{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--mu);font-weight:600}
+.gfp svg{display:block;width:100%;height:auto;max-height:150px;margin:6px 0 2px}
+.gfp text{fill:var(--mu);font:600 11px Figtree,sans-serif}
+.sf{flex:none;display:grid;gap:10px;padding:12px 20px calc(14px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--bd)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.hint{margin:0;color:var(--mu);font-size:13px;text-align:center}
+.fl{display:block;margin-bottom:14px;font-size:14px;font-weight:600;color:var(--mu)}
+.in{display:block;width:100%;min-height:48px;margin-top:6px;padding:0 14px;border:1px solid var(--bd);border-radius:12px;background:var(--sf2);color:var(--tx);font:400 16px Figtree,system-ui,sans-serif}
+select.in{appearance:none;padding-right:38px;background:linear-gradient(45deg,transparent 50%,var(--mu) 50%) calc(100% - 20px) 21px/6px 6px no-repeat,linear-gradient(135deg,var(--mu) 50%,transparent 50%) calc(100% - 14px) 21px/6px 6px no-repeat,var(--sf2)}
+select.in:disabled{opacity:.6}
+.in[aria-invalid=true]{border-color:var(--no)}
+.fl em{display:block;margin-top:4px;color:var(--no);font-size:13px;font-style:normal;font-weight:500}
+.fl em:empty{display:none}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));z-index:50;transform:translate(-50%,30px);opacity:0;pointer-events:none;max-width:calc(100% - 32px);padding:12px 18px;border-radius:14px;background:var(--tx);color:var(--bg);font-weight:600;transition:.3s}
+.toast.on{transform:translate(-50%,0);opacity:1}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body data-view="cards">
+<header class="hd">
+  <b class="logo">EMS</b><span class="crumb">Offices</span>
+  <button class="ib" id="th" aria-label="Switch light or dark theme"></button>
+  <button class="ghost" id="ex"></button>
+</header>
+<main class="wrap">
+  <div class="top">
+    <div><h1>Offices</h1><p class="sub" id="sub"></p></div>
+    <button class="btn p" data-a="new" id="bn"></button>
+  </div>
+  <div class="tools">
+    <label class="srch" id="sr"><input id="q" type="search" placeholder="Search by name or address…" aria-label="Search offices"></label>
+    <div class="seg" role="group" aria-label="View"><button data-v="cards" aria-pressed="true">Cards</button><button data-v="table" aria-pressed="false">Table</button></div>
+  </div>
+  <div class="chips" id="chips"></div>
+  <section class="cards" id="cards" aria-label="Registered offices"></section>
+  <div class="tbl"><table><thead><tr><th>Office</th><th>Level</th><th>Parent</th><th>Radius</th><th>Working hours</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <p class="empty" id="empty" hidden>No offices match your search.</p>
+</main>
+<div class="ov" id="ov1"></div>
+<aside class="sheet" id="s1" role="dialog" aria-modal="true" aria-label="Office details" tabindex="-1"></aside>
+<div class="ov o2" id="ov2"></div>
+<aside class="sheet s2" id="s2" role="dialog" aria-modal="true" aria-label="Office form" tabindex="-1"></aside>
+<div class="toast" id="toast" role="status"></div>
+<script>
+var $=function(s){return document.querySelector(s)};
+var I={sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',moon:'<path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z"/>',search:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',plus:'<path d="M12 5v14M5 12h14"/>',x:'<path d="M6 6l12 12M18 6L6 18"/>',chev:'<path d="M9 6l6 6-6 6"/>',edit:'<path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>',copy:'<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>',exit:'<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>',bld:'<path d="M4 21V5l8-2v18M12 9h8v12M8 8h1M8 12h1M8 16h1M16 13h1M16 17h1"/>',pin:'<path d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.800 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',map:'<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>',gps:'<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/>',ring:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>'};
+function ico(n,s){s=s||18;return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+I[n]+'</svg>'}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+var LV={head:"Head office",district:"District office",upazila:"Upazila office (UNFEO)"},LS={head:"Head",district:"District",upazila:"Upazila"},PL={district:"head",upazila:"district"};
+var PRE=[["Dhaka",23.8103,90.4125],["Chattogram",22.3569,91.7832],["Mymensingh",24.7471,90.4203],["Sylhet",24.8949,91.8687],["Rajshahi",24.3745,88.6042],["Khulna",22.8456,89.5403],["Barishal",22.701,90.3535],["Rangpur",25.7439,89.2752]];
+var TM=[];for(var h=5;h<24;h++){["00","30"].forEach(function(m){var p=(h<10?"0":"")+h+":"+m;TM.push(p)})}
+function t12(s){var p=s.split(":"),h=+p[0];return (h%12||12)+":"+p[1]+" "+(h<12?"AM":"PM")}
+var O=[
+{id:1,name:"Bureau of Non-Formal Education (Head Office)",lvl:"head",par:null,addr:"232/1 Tejgaon Industrial Area, Dhaka 1208",lat:23.7654,lng:90.3995,rad:150,st:"09:00",gr:15,en:"17:00"},
+{id:2,name:"District Non Formal Education Bureau",lvl:"district",par:1,addr:"Mymensingh",lat:24.7645,lng:90.3908,rad:3000,st:"09:00",gr:15,en:"17:00"},
+{id:3,name:"Upazila Bureau of Non Formal Education",lvl:"upazila",par:2,addr:"Haluaghat",lat:23.8103,lng:90.4125,rad:100,st:"09:00",gr:15,en:"17:00"}];
+var S={v:"cards",f:"all",q:"",id:null,mode:"",arm:false},armT;
+function byId(id){return O.filter(function(o){return o.id===id})[0]}
+function kids(id){return O.filter(function(o){return o.par===id})}
+function pn(o){return o.par?byId(o.par).name:""}
+function pl(t,c){return '<span class="pl '+(c||"")+'">'+esc(t)+'</span>'}
+function fmtR(r){return r>=1000?(r/1000)+" km":r+" m"}
+function match(o){var q=S.q.toLowerCase();return (S.f==="all"||o.lvl===S.f)&&(!q||(o.name+" "+o.addr).toLowerCase().indexOf(q)>-1)}
+function list(){
+  var r=O.filter(match);
+  $("#sub").textContent=O.length+" registered offices";
+  $("#cards").innerHTML=r.map(function(o){return '<button class="card" data-id="'+o.id+'"><span class="av">'+ico("bld",22)+'</span><span class="cm"><b>'+esc(o.name)+'</b><small>'+esc(o.addr)+'</small><span class="tg">'+pl(LS[o.lvl],"br")+(o.par?pl("Under "+pn(o)):pl("Top level"))+'</span></span>'+ico("chev")+'<span class="cf"><span>'+ico("ring",14)+fmtR(o.rad)+'</span><span>'+ico("clock",14)+t12(o.st)+' – '+t12(o.en)+'</span></span></button>'}).join("");
+  $("#rows").innerHTML=r.map(function(o){return '<tr data-id="'+o.id+'"><td><div class="who"><span class="av">'+ico("bld")+'</span><div><b>'+esc(o.name)+'</b><small>'+esc(o.addr)+'</small></div></div></td><td>'+pl(LS[o.lvl],"br")+'</td><td>'+esc(o.par?pn(o):"None")+'</td><td>'+fmtR(o.rad)+'</td><td>'+t12(o.st)+' – '+t12(o.en)+' <small>(+'+o.gr+' min)</small></td></tr>'}).join("");
+  $("#empty").hidden=r.length>0;
+  var C={all:O.length,head:0,district:0,upazila:0};O.forEach(function(o){C[o.lvl]++});
+  $("#chips").innerHTML=[["all","All"],["head","Head"],["district","District"],["upazila","Upazila"]].map(function(c){return '<button class="chip" data-f="'+c[0]+'" aria-pressed="'+(S.f===c[0])+'">'+c[1]+'<i>'+C[c[0]]+'</i></button>'}).join("");
+}
+function gfp(lat,lng,rad){
+  var R=+rad||10,r=14+(Math.log10(Math.max(10,R))-1)*18,la=parseFloat(lat),lo=parseFloat(lng);
+  var co=(isNaN(la)||isNaN(lo))?"Enter valid coordinates":"Office: "+la.toFixed(5)+", "+lo.toFixed(5);
+  return '<div class="gfp"><div class="gh"><span>Geofence pin and coordinates</span><span>Radius: '+esc(fmtR(R))+'</span></div><svg viewBox="0 0 240 130" role="img" aria-label="Geofence preview"><path d="M0 65h240M120 0v130" stroke="var(--bd)" stroke-dasharray="3 5"/><circle cx="120" cy="65" r="'+(r+10)+'" fill="none" stroke="var(--br)" stroke-opacity=".35" stroke-dasharray="3 4"/><circle cx="120" cy="65" r="'+r+'" fill="var(--br)" fill-opacity=".16" stroke="var(--br)" stroke-width="2"/><circle cx="120" cy="65" r="5" fill="var(--br)"/><text x="130" y="60">Office</text></svg><code>'+co+'</code></div>'
+}
+function det(o){
+  var k=kids(o.id),arm=S.arm;
+  return '<div class="grab" aria-hidden="true"><i></i></div><div class="sb"><div class="dh"><span class="av xl">'+ico("bld",28)+'</span><div><h2>'+esc(o.name)+'</h2><p>'+LV[o.lvl]+'</p></div><button class="ib" data-a="close1" aria-label="Close details">'+ico("x",20)+'</button></div><div class="tg">'+pl(LS[o.lvl],"br")+(o.par?pl("Under "+pn(o)):pl("Top level"))+'</div>'+
+  '<h4>Location</h4><div class="grp"><div class="rw"><span>Address</span><b>'+esc(o.addr||"Not set")+'</b></div><div class="rw"><span>Coordinates</span><code>'+o.lat+', '+o.lng+'</code><button class="ib" data-a="copy" aria-label="Copy coordinates">'+ico("copy")+'</button></div><div class="rw"><span>Geofence</span><b>'+fmtR(o.rad)+' radius</b></div></div>'+gfp(o.lat,o.lng,o.rad)+
+  '<h4>Working hours</h4><div class="grp"><div class="rw"><span>Start time</span><b>'+t12(o.st)+'</b></div><div class="rw"><span>Grace period</span><b>'+o.gr+' minutes</b></div><div class="rw"><span>End time</span><b>'+t12(o.en)+'</b></div></div>'+
+  '<h4>Hierarchy</h4><div class="grp"><div class="rw"><span>Level</span><b>'+LV[o.lvl]+'</b></div><div class="rw"><span>Parent office</span><b>'+esc(o.par?pn(o):"None")+'</b></div><div class="rw"><span>Sub-offices</span><b>'+(k.length?k.map(function(x){return esc(x.name)}).join("<br>"):"None")+'</b></div></div></div>'+
+  '<div class="sf"><button class="btn p wide" data-a="edit">'+ico("edit")+'Edit office</button><div class="two"><a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps?q='+o.lat+','+o.lng+'">'+ico("map")+'View on map</a><button class="btn dg" data-a="del"'+(k.length?" disabled":"")+'>'+ico("trash")+(arm?"Tap to confirm":"Delete")+'</button></div>'+(k.length?'<p class="hint">Remove or move its sub-offices before deleting.</p>':"")+'</div>'
+}
+function opt(v,l,sel){return '<option value="'+esc(v)+'"'+(sel?" selected":"")+'>'+esc(l)+'</option>'}
+function parOpts(lvl,self,cur){var pl_=PL[lvl];return opt("","None",!cur)+O.filter(function(x){return x.lvl===pl_&&x.id!==self}).map(function(x){return opt(x.id,x.name,x.id===cur)}).join("")}
+var FD={name:["Office name","text","e.g. Savar Upazila Office"],lvl:["Hierarchy level"],par:["Parent office"],addr:["Office address","text","Full office address"],lat:["Center latitude","number"],lng:["Center longitude","number"],rad:["Geofence radius (meters)","number"],st:["Start time"],gr:["Grace minutes","number"],en:["End time"]};
+function fld(k,o){
+  var d=FD[k],v=o[k],h;
+  if(k==="lvl")h='<select class="in" id="f_lvl">'+Object.keys(LV).map(function(x){return opt(x,LV[x],x===v)}).join("")+'</select>';
+  else if(k==="par")h='<select class="in" id="f_par"'+(o.lvl==="head"?" disabled":"")+'>'+parOpts(o.lvl,o.id,o.par)+'</select>';
+  else if(k==="st"||k==="en")h='<select class="in" id="f_'+k+'">'+TM.map(function(x){return opt(x,t12(x),x===v)}).join("")+'</select>';
+  else h='<input class="in" id="f_'+k+'" type="'+d[1]+'"'+(d[1]==="number"?' inputmode="decimal" step="any"':"")+' value="'+esc(v)+'" placeholder="'+esc(d[2]||"")+'" autocomplete="off">';
+  return '<label class="fl">'+d[0]+h+'<em id="e_'+k+'"></em></label>'
+}
+function frm(m,o){
+  var neu=m==="new";
+  return '<div class="grab" aria-hidden="true"><i></i></div><div class="sb"><div class="dh"><div><h2>'+(neu?"Add new office":"Edit office")+'</h2><p>'+(neu?"Register an office with its geofence and hours.":"Changes appear in the details right away.")+'</p></div><button class="ib" data-a="close2" aria-label="Close form">'+ico("x",20)+'</button></div>'+
+  '<h4>Basics</h4>'+fld("name",o)+fld("lvl",o)+fld("par",o)+fld("addr",o)+
+  '<h4>Geofence</h4><div class="two">'+fld("lat",o)+fld("lng",o)+'</div>'+fld("rad",o)+'<div id="gpbox">'+gfp(o.lat,o.lng,o.rad)+'</div><button class="btn p wide" data-a="gps" style="margin-bottom:14px">'+ico("gps")+'Use current GPS location</button><label class="fl">Quick Bangladesh preset<select class="in" id="f_pre"><option value="">Choose a district…</option>'+PRE.map(function(p,i){return opt(i,p[0])}).join("")+'</select></label>'+
+  '<h4>Working hours</h4><div class="two">'+fld("st",o)+fld("en",o)+'</div>'+fld("gr",o)+'</div><div class="sf"><button class="btn p wide" data-a="save">'+(neu?"Create office":"Save changes")+'</button><button class="btn wide" data-a="close2">Cancel</button></div>'
+}
+function show(n,html){var s=$("#s"+n);s.innerHTML=html;s.classList.add("on");$("#ov"+n).classList.add("on");if(n===2)$("#s1").classList.add("under");document.body.classList.add("lock");setTimeout(function(){s.focus({preventScroll:true})},60)}
+function hide(n){$("#s"+n).classList.remove("on");$("#ov"+n).classList.remove("on");if(n===2)$("#s1").classList.remove("under");else S.arm=false;if(!$("#s1").classList.contains("on")&&!$("#s2").classList.contains("on"))document.body.classList.remove("lock")}
+function toast(m){var t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(t._t);t._t=setTimeout(function(){t.classList.remove("on")},2400)}
+function refresh(o){list();if($("#s1").classList.contains("on"))$("#s1").innerHTML=det(o)}
+function val(k){return $("#f_"+k).value.trim()}
+function prev(){$("#gpbox").innerHTML=gfp(val("lat"),val("lng"),val("rad"))}
+function save(){
+  var ks="name lvl par addr lat lng rad st en gr".split(" "),v={},bad=false;
+  ks.forEach(function(k){var x=val(k),err="",n=parseFloat(x);
+    if(k==="name"&&!x)err="Enter the office name.";
+    if(k==="lat"&&(isNaN(n)||n<-90||n>90))err="Latitude must be between -90 and 90.";
+    if(k==="lng"&&(isNaN(n)||n<-180||n>180))err="Longitude must be between -180 and 180.";
+    if(k==="rad"&&(isNaN(n)||n<10))err="Radius must be at least 10 meters.";
+    if(k==="gr"&&(isNaN(n)||n<0||n>120))err="Enter 0 to 120 minutes.";
+    if(k==="en"&&val("en")<=val("st"))err="End time must be after the start time.";
+    var el=$("#f_"+k);$("#e_"+k).textContent=err;el.setAttribute("aria-invalid",err?"true":"false");if(err)bad=true;v[k]=x});
+  if(bad)return;
+  v.lat=+v.lat;v.lng=+v.lng;v.rad=+v.rad;v.gr=+v.gr;v.par=(v.lvl==="head"||!v.par)?null:+v.par;
+  var o;
+  if(S.mode==="edit"){o=byId(S.id);Object.keys(v).forEach(function(k){o[k]=v[k]});hide(2);refresh(o);toast("Changes saved")}
+  else{v.id=Date.now();O.push(v);list();hide(2);S.id=v.id;show(1,det(v));toast("Office created")}
+}
+document.addEventListener("click",function(e){
+  var t=e.target,a=t.closest("[data-a]"),c=t.closest("[data-id]"),f=t.closest("[data-f]"),v=t.closest("[data-v]");
+  if(t.classList&&t.classList.contains("ov")){hide(t.id==="ov2"?2:1);return}
+  if(f){S.f=f.dataset.f;list();return}
+  if(v){S.v=v.dataset.v;document.body.dataset.view=S.v;document.querySelectorAll(".seg button").forEach(function(b){b.setAttribute("aria-pressed",b===v)});return}
+  if(a){var k=a.dataset.a,o=byId(S.id);
+    if(k==="new"){S.mode="new";show(2,frm("new",{id:0,name:"",lvl:"upazila",par:null,addr:"",lat:23.8103,lng:90.4125,rad:100,st:"09:00",gr:15,en:"17:00"}))}
+    else if(k==="close1")hide(1);else if(k==="close2")hide(2);
+    else if(k==="edit"){S.mode="edit";show(2,frm("edit",o))}
+    else if(k==="save")save();
+    else if(k==="gps"){try{navigator.geolocation.getCurrentPosition(function(p){$("#f_lat").value=p.coords.latitude.toFixed(5);$("#f_lng").value=p.coords.longitude.toFixed(5);prev();toast("Location captured")},function(){toast("Location unavailable")})}catch(x){toast("Location unavailable")}}
+    else if(k==="copy"){try{navigator.clipboard.writeText(o.lat+", "+o.lng).then(function(){toast("Coordinates copied")},function(){toast("Copy failed")})}catch(x){toast("Copy failed")}}
+    else if(k==="del"){if(!S.arm){S.arm=true;clearTimeout(armT);armT=setTimeout(function(){S.arm=false;if($("#s1").classList.contains("on"))$("#s1").innerHTML=det(o)},3500);refresh(o)}else{S.arm=false;clearTimeout(armT);O=O.filter(function(x){return x.id!==o.id});hide(1);list();toast("Office deleted")}}
+    return}
+  if(c){S.id=+c.dataset.id;S.arm=false;show(1,det(byId(S.id)))}
+});
+document.addEventListener("change",function(e){
+  var t=e.target;
+  if(t.id==="f_lvl"){var p=$("#f_par");p.innerHTML=parOpts(t.value,S.mode==="edit"?S.id:0,null);p.disabled=t.value==="head"}
+  if(t.id==="f_pre"&&t.value!==""){var r=PRE[+t.value];$("#f_lat").value=r[1];$("#f_lng").value=r[2];t.value="";prev()}
+});
+document.addEventListener("input",function(e){if(/^f_(lat|lng|rad)$/.test(e.target.id))prev()});
+$("#q").addEventListener("input",function(e){S.q=e.target.value;list()});
+document.addEventListener("keydown",function(e){if(e.key==="Escape"){if($("#s2").classList.contains("on"))hide(2);else if($("#s1").classList.contains("on"))hide(1)}});
+var dg=null;
+document.addEventListener("pointerdown",function(e){var g=e.target.closest(".grab");if(!g)return;var s=g.parentNode;dg={s:s,y:e.clientY,d:0};s.style.transition="none";try{g.setPointerCapture(e.pointerId)}catch(x){}});
+document.addEventListener("pointermove",function(e){if(!dg)return;dg.d=Math.max(0,e.clientY-dg.y);dg.s.style.transform="translateY("+dg.d+"px)"});
+function endDrag(){if(!dg)return;var s=dg.s,d=dg.d;dg=null;s.style.transition="";s.style.transform="";if(d>110)hide(s.id==="s1"?1:2)}
+document.addEventListener("pointerup",endDrag);document.addEventListener("pointercancel",endDrag);
+var root=document.documentElement;
+function isDark(){return root.dataset.theme?root.dataset.theme==="dark":matchMedia("(prefers-color-scheme: dark)").matches}
+function paint(){$("#th").innerHTML=ico(isDark()?"sun":"moon",20)}
+$("#th").onclick=function(){root.dataset.theme=isDark()?"light":"dark";paint()};
+$("#ex").innerHTML=ico("exit")+"Exit";
+$("#sr").insertAdjacentHTML("afterbegin",ico("search",20));
+$("#bn").innerHTML=ico("plus")+"Add office";
+paint();list();
+</script>
+</body>
+</html>
