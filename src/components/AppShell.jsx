@@ -12,10 +12,13 @@ import {
   CalendarOff,
   LayoutDashboard,
   LogOut,
-  Eye
+  Eye,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getTodayDhaka, formatDisplayDate } from '../utils/dhakaTime.js';
+import { useTheme } from '../utils/theme.js';
 
 const ROUTE_TITLES = {
   '/employee': 'Daily Attendance',
@@ -32,11 +35,12 @@ const ROUTE_TITLES = {
   '/admin/holidays': 'Holidays'
 };
 
-export default function AppShell({ title, children }) {
+export default function AppShell({ title, showThemeToggle = false, children }) {
   const { profile, userOffice, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const { isDark, toggleTheme } = useTheme();
 
   useEffect(() => {
     const syncOnline = () => setIsOnline(navigator.onLine);
@@ -101,12 +105,14 @@ export default function AppShell({ title, children }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col lg:flex-row">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col lg:flex-row transition-colors">
       {/* Desktop Sidebar */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30">
-        <div className="px-5 py-5 border-b border-slate-100">
-          <div className="text-lg font-bold tracking-tight text-emerald-800 font-display">EMS Bangladesh</div>
-          <div className="text-xs text-slate-500 mt-1 truncate">{roleTitle}</div>
+      <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:inset-y-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 z-30 pt-safe">
+        <div className="px-5 py-5 border-b border-slate-100 dark:border-slate-800">
+          <div className="text-lg font-bold tracking-tight text-[#0b6b4f] dark:text-[#4fd1a1] font-display">
+            EMS Bangladesh
+          </div>
+          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 truncate">{roleTitle}</div>
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
@@ -117,8 +123,10 @@ export default function AppShell({ title, children }) {
               <Link
                 key={item.to}
                 to={item.to}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                  active ? 'bg-emerald-50 text-emerald-800' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                className={`min-h-[44px] flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                  active
+                    ? 'bg-[#0b6b4f]/10 text-[#0b6b4f] dark:bg-[#4fd1a1]/15 dark:text-[#4fd1a1]'
+                    : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 <Icon className="w-5 h-5 shrink-0" />
@@ -128,16 +136,16 @@ export default function AppShell({ title, children }) {
           })}
         </nav>
 
-        <div className="p-4 border-t border-slate-100 space-y-3">
-          <div className="text-xs text-slate-600">
-            <div className="font-semibold text-slate-900 truncate">{profile?.name}</div>
-            <div className="truncate text-slate-500">{profile?.designation}</div>
-            {userOffice && <div className="truncate text-slate-500 mt-0.5">{userOffice.name}</div>}
+        <div className="p-4 border-t border-slate-100 dark:border-slate-800 space-y-3 pb-safe">
+          <div className="text-xs text-slate-600 dark:text-slate-300">
+            <div className="font-semibold text-slate-900 dark:text-slate-100 truncate">{profile?.name}</div>
+            <div className="truncate text-slate-500 dark:text-slate-400">{profile?.designation}</div>
+            {userOffice && <div className="truncate text-slate-500 dark:text-slate-400 mt-0.5">{userOffice.name}</div>}
           </div>
           <button
             type="button"
             onClick={handleLogout}
-            className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+            className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
           >
             <LogOut className="w-4 h-4" />
             <span>Sign Out</span>
@@ -147,31 +155,78 @@ export default function AppShell({ title, children }) {
 
       {/* Main Column */}
       <div className="flex-1 flex flex-col lg:pl-64 min-w-0">
-        {/* Mobile & Tablet Top Bar (56px compact) */}
-        <header className="sticky top-0 z-30 h-14 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 flex items-center justify-between gap-4 lg:hidden">
-          <div className="min-w-0 flex items-center gap-2">
-            <span className="text-base font-bold text-emerald-800 font-display whitespace-nowrap shrink-0">EMS</span>
-            <span className="text-slate-300" aria-hidden="true">/</span>
-            <span className="text-sm font-semibold text-slate-800 truncate">{currentTitle}</span>
+        {/* Mobile & Tablet Top Bar (56px compact + safe-area top) */}
+        <header className="sticky top-0 z-30 pt-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 lg:hidden">
+          <div className="h-14 px-4 flex items-center justify-between gap-2">
+            <div className="min-w-0 flex items-center gap-2">
+              <span className="text-base font-bold text-[#0b6b4f] dark:text-[#4fd1a1] font-display whitespace-nowrap shrink-0">
+                EMS
+              </span>
+              <span className="text-slate-300 dark:text-slate-700" aria-hidden="true">/</span>
+              <span className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{currentTitle}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {showThemeToggle && (
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                >
+                  {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleLogout}
+                aria-label="Exit"
+                className="min-h-[44px] min-w-[44px] px-2 flex items-center justify-center gap-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Exit</span>
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            aria-label="Sign Out"
-            className="min-h-[44px] min-w-[44px] flex items-center justify-end gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 shrink-0"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Exit</span>
-          </button>
         </header>
 
         {/* Desktop Top Bar */}
-        <header className="hidden lg:flex h-14 bg-white border-b border-slate-200 px-8 items-center justify-between gap-8 sticky top-0 z-20">
-          <h1 className="text-base font-semibold text-slate-900 whitespace-nowrap">{currentTitle}</h1>
-          <div className="flex items-center gap-3 text-xs text-slate-500 tabular-nums">
-            <span>{todayDisplay}</span>
-            <span aria-hidden="true">·</span>
-            <span>Asia/Dhaka</span>
+        <header className="hidden lg:flex pt-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-8 items-center justify-between gap-8 sticky top-0 z-20">
+          <div className="h-14 w-full flex items-center justify-between gap-8">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm font-bold text-[#0b6b4f] dark:text-[#4fd1a1] font-display whitespace-nowrap">
+                EMS
+              </span>
+              <span className="text-slate-300 dark:text-slate-700" aria-hidden="true">/</span>
+              <h1 className="text-base font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap truncate">
+                {currentTitle}
+              </h1>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                <span>{todayDisplay}</span>
+                <span aria-hidden="true">·</span>
+                <span>Asia/Dhaka</span>
+              </div>
+              {showThemeToggle && (
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                >
+                  {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleLogout}
+                aria-label="Exit"
+                className="min-h-[44px] px-3 inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Exit</span>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -191,7 +246,7 @@ export default function AppShell({ title, children }) {
       {/* Mobile Fixed Bottom Navigation Bar */}
       {navItems.length > 0 && (
         <nav
-          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 pb-safe"
+          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 pb-safe"
           aria-label="Primary Navigation"
         >
           <div
@@ -205,8 +260,10 @@ export default function AppShell({ title, children }) {
                 <Link
                   key={item.to}
                   to={item.to}
-                  className={`min-h-[44px] flex flex-col items-center justify-center px-1 transition-colors ${
-                    active ? 'text-emerald-700 font-semibold' : 'text-slate-500 hover:text-slate-800'
+                  className={`min-h-[44px] flex flex-col items-center justify-center px-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                    active
+                      ? 'text-[#0b6b4f] dark:text-[#4fd1a1] font-semibold'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
                   }`}
                 >
                   <Icon className="w-5 h-5" />

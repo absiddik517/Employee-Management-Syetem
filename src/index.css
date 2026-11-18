@@ -1,9 +1,14 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   :root {
     font-family: "DM Sans", "Noto Sans Bengali", system-ui, -apple-system, sans-serif;
     color-scheme: light;
+  }
+
+  .dark {
+    color-scheme: dark;
   }
 
   h1, h2, h3, h4, .font-display {
@@ -26,4 +31,11 @@
 
 .pt-safe {
   padding-top: env(safe-area-inset-top);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-motion,
+  .sheet-backdrop-motion {
+    transition-duration: 0.01ms !important;
+  }
 }
