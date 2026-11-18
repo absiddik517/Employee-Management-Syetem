@@ -67,6 +67,12 @@ export default function UserDetailSheet({
   const isPending = user.approvalStatus === 'pending';
   const hasDevice = Boolean(user.boundDeviceId);
   const resolvedOffice = officeName ? officeName(user.officeId) : '';
+  const additionalOfficeNames = Array.isArray(user.additionalOfficeIds)
+    ? user.additionalOfficeIds
+        .filter((id) => id && id !== user.officeId)
+        .map((id) => (officeName ? officeName(id) : id))
+        .filter(Boolean)
+    : [];
 
   const handleCopyUid = async () => {
     if (!uid || !navigator?.clipboard) return;
@@ -238,6 +244,12 @@ export default function UserDetailSheet({
                   : 'Pending approval'
               }
             />
+            {(user.role === 'district_officer' || additionalOfficeNames.length > 0) && (
+              <DetailRow
+                label="Additional charge"
+                value={additionalOfficeNames.length > 0 ? additionalOfficeNames.join(', ') : 'None'}
+              />
+            )}
           </dl>
         </section>
 

@@ -8,10 +8,10 @@ import { getCurrentMonthDhaka } from '../../utils/dhakaTime.js';
 import { downloadReportCsv } from '../../utils/csv.js';
 
 export default function DistrictReportsPage() {
-  const { profile, offices } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType } = useAuth();
   const { logAudit } = useData();
 
-  const myOfficeId = profile?.officeId || '';
+  const myOfficeId = activeOfficeId || profile?.officeId || '';
   const managedOffices = useMemo(
     () => offices.filter((o) => o.id === myOfficeId || o.parentOfficeId === myOfficeId),
     [offices, myOfficeId]
@@ -27,10 +27,11 @@ export default function DistrictReportsPage() {
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
-    if (!selectedOfficeId && managedOffices.length) {
-      setSelectedOfficeId(managedOffices[0].id);
-    }
-  }, [managedOffices, selectedOfficeId]);
+    setPreviewReport(null);
+    setFeedbackMsg('');
+    setErrorMsg('');
+    setSelectedOfficeId(managedOffices[0]?.id || '');
+  }, [myOfficeId, managedOffices]);
 
   const loadSubmittedReports = useCallback(async () => {
     if (!myOfficeId) return;
@@ -186,7 +187,20 @@ export default function DistrictReportsPage() {
     <AppShell>
       <div className="space-y-5">
         <section className="bg-white rounded-2xl border border-slate-200 p-4 space-y-4">
-          <h2 className="text-base font-bold text-slate-900 font-display">Monthly Settled Report Generator</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-base font-bold text-slate-900 font-display">Monthly Settled Report Generator</h2>
+            {activeOffice && (
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
+                  activeChargeType === 'additional'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-emerald-100 text-emerald-800'
+                }`}
+              >
+                {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'} · {activeOffice.name}
+              </span>
+            )}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">Office</label>

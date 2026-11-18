@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
 import CompleteProfilePage from './pages/CompleteProfilePage.jsx';
 import PendingApprovalPage from './pages/PendingApprovalPage.jsx';
+import OfficeSelectPage from './pages/OfficeSelectPage.jsx';
 
 import EmployeeHomePage from './pages/employee/EmployeeHomePage.jsx';
 import EmployeeHistoryPage from './pages/employee/EmployeeHistoryPage.jsx';
@@ -23,6 +24,7 @@ import SuperAdminDashboardPage from './pages/admin/SuperAdminDashboardPage.jsx';
 import AdminOfficesPage from './pages/admin/AdminOfficesPage.jsx';
 import AdminUsersPage from './pages/admin/AdminUsersPage.jsx';
 import AdminHolidaysPage from './pages/admin/AdminHolidaysPage.jsx';
+import AdminAdditionalChargePage from './pages/admin/AdminAdditionalChargePage.jsx';
 
 function GuestRoute({ children }) {
   const { isAuthenticated, firebaseUser, needsProfileSetup, profile, getRoleHomePath } = useAuth();
@@ -46,8 +48,17 @@ function MissingProfileRoute({ children }) {
   return children;
 }
 
-function ProtectedRoute({ roles, allowPending = false, children }) {
-  const { isAuthenticated, firebaseUser, needsProfileSetup, isApproved, profile, getRoleHomePath } = useAuth();
+function ProtectedRoute({ roles, allowPending = false, requireActiveOffice = false, children }) {
+  const {
+    isAuthenticated,
+    firebaseUser,
+    needsProfileSetup,
+    isApproved,
+    profile,
+    hasMultipleOffices,
+    activeOfficeId,
+    getRoleHomePath
+  } = useAuth();
 
   if (firebaseUser && needsProfileSetup && !isAuthenticated) {
     return <Navigate to="/complete-profile" replace />;
@@ -64,6 +75,9 @@ function ProtectedRoute({ roles, allowPending = false, children }) {
   }
   if (roles && !roles.includes(profile.role)) {
     return <Navigate to={getRoleHomePath(profile)} replace />;
+  }
+  if (requireActiveOffice && profile.role === 'district_officer' && hasMultipleOffices && !activeOfficeId) {
+    return <Navigate to="/select-office" replace />;
   }
   return children;
 }
@@ -152,11 +166,20 @@ export default function App() {
           }
         />
 
+        <Route
+          path="/select-office"
+          element={
+            <ProtectedRoute roles={['district_officer']}>
+              <OfficeSelectPage />
+            </ProtectedRoute>
+          }
+        />
+
         {/* District Officer */}
         <Route
           path="/district"
           element={
-            <ProtectedRoute roles={['district_officer']}>
+            <ProtectedRoute roles={['district_officer']} requireActiveOffice>
               <DistrictSettlementPage />
             </ProtectedRoute>
           }
@@ -164,7 +187,7 @@ export default function App() {
         <Route
           path="/district/approvals"
           element={
-            <ProtectedRoute roles={['district_officer']}>
+            <ProtectedRoute roles={['district_officer']} requireActiveOffice>
               <DistrictApprovalsPage />
             </ProtectedRoute>
           }
@@ -172,7 +195,7 @@ export default function App() {
         <Route
           path="/district/reports"
           element={
-            <ProtectedRoute roles={['district_officer']}>
+            <ProtectedRoute roles={['district_officer']} requireActiveOffice>
               <DistrictReportsPage />
             </ProtectedRoute>
           }
@@ -210,6 +233,14 @@ export default function App() {
           element={
             <ProtectedRoute roles={['super_admin']}>
               <AdminUsersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/additional-charge"
+          element={
+            <ProtectedRoute roles={['super_admin']}>
+              <AdminAdditionalChargePage />
             </ProtectedRoute>
           }
         />

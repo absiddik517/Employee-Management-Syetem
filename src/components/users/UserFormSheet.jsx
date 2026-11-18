@@ -19,6 +19,46 @@ const INPUT_CLASS =
 const LABEL_CLASS = 'block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5';
 const ERROR_CLASS = 'mt-1 text-xs text-rose-600 dark:text-rose-400';
 
+function AdditionalChargePicker({ offices, primaryOfficeId, selectedIds = [], onToggle, idPrefix }) {
+  const districtOffices = offices.filter((o) => o.level === 'district' && o.id !== primaryOfficeId);
+  return (
+    <div className="sm:col-span-2 space-y-2">
+      <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+        Additional charge offices (অতিরিক্ত দায়িত্ব · optional)
+      </div>
+      {districtOffices.length === 0 ? (
+        <div className="p-3 rounded-[14px] border border-dashed border-slate-300 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
+          No other district offices available to assign.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto p-2.5 rounded-[14px] border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/40">
+          {districtOffices.map((o) => {
+            const checked = selectedIds.includes(o.id);
+            return (
+              <label
+                key={`${idPrefix}-${o.id}`}
+                className={`min-h-[44px] px-3 py-2 rounded-[12px] border flex items-center gap-2.5 cursor-pointer text-xs font-medium transition-colors ${
+                  checked
+                    ? 'bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 border-[#0b6b4f] dark:border-[#4fd1a1] text-[#0b6b4f] dark:text-[#4fd1a1]'
+                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => onToggle(o.id)}
+                  className="w-4 h-4 accent-[#0b6b4f] dark:accent-[#4fd1a1] shrink-0"
+                />
+                <span className="truncate">{o.name}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UserFormSheet({
   open,
   mode, // 'create' | 'link' | 'edit'
@@ -42,6 +82,7 @@ export default function UserFormSheet({
     email: '',
     password: '',
     officeId: '',
+    additionalOfficeIds: [],
     role: 'employee',
     joiningDate: getTodayDhaka()
   });
@@ -58,6 +99,7 @@ export default function UserFormSheet({
     mobile: '',
     address: '',
     officeId: '',
+    additionalOfficeIds: [],
     role: 'employee',
     approvalStatus: 'approved',
     status: 'active',
@@ -71,6 +113,7 @@ export default function UserFormSheet({
     designation: '',
     mobile: '',
     officeId: '',
+    additionalOfficeIds: [],
     address: '',
     joiningDate: getTodayDhaka(),
     role: 'employee',
@@ -97,6 +140,7 @@ export default function UserFormSheet({
         email: '',
         password: '',
         officeId: '',
+        additionalOfficeIds: [],
         role: 'employee',
         joiningDate: getTodayDhaka()
       });
@@ -112,6 +156,7 @@ export default function UserFormSheet({
         mobile: '',
         address: '',
         officeId: '',
+        additionalOfficeIds: [],
         role: 'employee',
         approvalStatus: 'approved',
         status: 'active',
@@ -124,6 +169,9 @@ export default function UserFormSheet({
         designation: user.designation || '',
         mobile: user.mobile || '',
         officeId: user.officeId || '',
+        additionalOfficeIds: Array.isArray(user.additionalOfficeIds)
+          ? user.additionalOfficeIds.filter((id) => id && id !== user.officeId)
+          : [],
         address: user.address || '',
         joiningDate: toDateInputValue(user.joiningDate, getTodayDhaka()),
         role: user.role || 'employee',
@@ -451,7 +499,13 @@ export default function UserFormSheet({
                 <select
                   id="link-office"
                   value={linkForm.officeId}
-                  onChange={(e) => setLinkForm((f) => ({ ...f, officeId: e.target.value }))}
+                  onChange={(e) =>
+                    setLinkForm((f) => ({
+                      ...f,
+                      officeId: e.target.value,
+                      additionalOfficeIds: f.additionalOfficeIds.filter((id) => id !== e.target.value)
+                    }))
+                  }
                   className={INPUT_CLASS}
                 >
                   <option value="">Assign office later / None</option>
@@ -535,6 +589,23 @@ export default function UserFormSheet({
                 {errors.joiningDate && <p className={ERROR_CLASS}>{errors.joiningDate}</p>}
               </div>
 
+              {linkForm.role === 'district_officer' && (
+                <AdditionalChargePicker
+                  offices={offices}
+                  primaryOfficeId={linkForm.officeId}
+                  selectedIds={linkForm.additionalOfficeIds}
+                  idPrefix="link"
+                  onToggle={(id) =>
+                    setLinkForm((f) => ({
+                      ...f,
+                      additionalOfficeIds: f.additionalOfficeIds.includes(id)
+                        ? f.additionalOfficeIds.filter((x) => x !== id)
+                        : [...f.additionalOfficeIds, id]
+                    }))
+                  }
+                />
+              )}
+
               <div className="sm:col-span-2">
                 <label htmlFor="link-photo" className={LABEL_CLASS}>Profile photo (optional)</label>
                 <input
@@ -601,7 +672,13 @@ export default function UserFormSheet({
               <select
                 id="create-office"
                 value={createForm.officeId}
-                onChange={(e) => setCreateForm((f) => ({ ...f, officeId: e.target.value }))}
+                onChange={(e) =>
+                  setCreateForm((f) => ({
+                    ...f,
+                    officeId: e.target.value,
+                    additionalOfficeIds: f.additionalOfficeIds.filter((id) => id !== e.target.value)
+                  }))
+                }
                 className={INPUT_CLASS}
               >
                 <option value="">Assign office later / None</option>
@@ -691,6 +768,23 @@ export default function UserFormSheet({
               {errors.joiningDate && <p className={ERROR_CLASS}>{errors.joiningDate}</p>}
             </div>
 
+            {createForm.role === 'district_officer' && (
+              <AdditionalChargePicker
+                offices={offices}
+                primaryOfficeId={createForm.officeId}
+                selectedIds={createForm.additionalOfficeIds}
+                idPrefix="create"
+                onToggle={(id) =>
+                  setCreateForm((f) => ({
+                    ...f,
+                    additionalOfficeIds: f.additionalOfficeIds.includes(id)
+                      ? f.additionalOfficeIds.filter((x) => x !== id)
+                      : [...f.additionalOfficeIds, id]
+                  }))
+                }
+              />
+            )}
+
             <div className="sm:col-span-2">
               <label htmlFor="create-photo" className={LABEL_CLASS}>Profile photo (optional)</label>
               <input
@@ -756,7 +850,13 @@ export default function UserFormSheet({
               <select
                 id="edit-office"
                 value={editForm.officeId}
-                onChange={(e) => setEditForm((f) => ({ ...f, officeId: e.target.value }))}
+                onChange={(e) =>
+                  setEditForm((f) => ({
+                    ...f,
+                    officeId: e.target.value,
+                    additionalOfficeIds: f.additionalOfficeIds.filter((id) => id !== e.target.value)
+                  }))
+                }
                 className={INPUT_CLASS}
               >
                 <option value="">Assign office later / None</option>
@@ -840,6 +940,23 @@ export default function UserFormSheet({
                 <option value="rejected">Rejected</option>
               </select>
             </div>
+
+            {editForm.role === 'district_officer' && (
+              <AdditionalChargePicker
+                offices={offices}
+                primaryOfficeId={editForm.officeId}
+                selectedIds={editForm.additionalOfficeIds}
+                idPrefix="edit"
+                onToggle={(id) =>
+                  setEditForm((f) => ({
+                    ...f,
+                    additionalOfficeIds: f.additionalOfficeIds.includes(id)
+                      ? f.additionalOfficeIds.filter((x) => x !== id)
+                      : [...f.additionalOfficeIds, id]
+                  }))
+                }
+              />
+            )}
 
             {editForm.status === 'resigned' && (
               <div className="sm:col-span-2">

@@ -19,7 +19,7 @@ import { db, OperationType, handleFirestoreError } from '../../firebase/config.j
 import { getTodayDhaka, formatDhakaTime, isWeekendDhaka } from '../../utils/dhakaTime.js';
 
 export default function DistrictSettlementPage() {
-  const { profile, offices } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType } = useAuth();
   const { resolveStorageUrl, deleteStoragePathSafe, logAudit } = useData();
 
   const [loading, setLoading] = useState(true);
@@ -50,7 +50,15 @@ export default function DistrictSettlementPage() {
     reason: ''
   });
 
-  const myOfficeId = profile?.officeId || '';
+  const myOfficeId = activeOfficeId || profile?.officeId || '';
+
+  useEffect(() => {
+    setFilters((f) => ({ ...f, officeId: 'all' }));
+    setSelectedIds([]);
+    setActiveItem(null);
+    setFeedbackMsg('');
+    setErrorMsg('');
+  }, [myOfficeId]);
 
   const managedOffices = useMemo(
     () => offices.filter((o) => o.id === myOfficeId || o.parentOfficeId === myOfficeId),
@@ -347,7 +355,20 @@ export default function DistrictSettlementPage() {
         <section className="bg-white rounded-2xl border border-slate-200 p-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 className="text-base font-bold text-slate-900 font-display">Attendance Settlement (নিষ্পত্তি)</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900 font-display">Attendance Settlement (নিষ্পত্তি)</h2>
+                {activeOffice && (
+                  <span
+                    className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
+                      activeChargeType === 'additional'
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-emerald-100 text-emerald-800'
+                    }`}
+                  >
+                    {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'} · {activeOffice.name}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">
                 Unsettled in view: <span className="font-bold text-rose-700 tabular-nums">{unsettledCount}</span>
                 <span aria-hidden="true"> · </span>

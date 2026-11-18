@@ -63,6 +63,18 @@ service cloud.firestore {
       return isApprovedActiveUser() && callerData().role == 'head_office';
     }
 
+    function isCallerOfficeInScope(val) {
+      return val is string
+        && (
+          val == callerData().officeId
+          || (
+            'additionalOfficeIds' in callerData()
+            && callerData().additionalOfficeIds is list
+            && val in callerData().additionalOfficeIds
+          )
+        );
+    }
+
     function registrationIsOpen() {
       return !exists(/databases/$(database)/documents/settings/app)
         || get(/databases/$(database)/documents/settings/app).data.registrationOpen == true;
@@ -112,9 +124,26 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isOptAdditionalOfficeIds(data) {
+      return !('additionalOfficeIds' in data)
+        || data.additionalOfficeIds == null
+        || (
+          data.additionalOfficeIds is list
+          && data.additionalOfficeIds.size() <= 20
+          && (
+            data.additionalOfficeIds.size() == 0
+            || (
+              data.additionalOfficeIds[0] is string
+              && data.additionalOfficeIds[0].size() >= 1
+              && data.additionalOfficeIds[0].size() <= 128
+            )
+          )
+        );
+    }
+
     function isValidUser(data) {
       return data.keys().hasAll(['status', 'role', 'approvalStatus', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'name', 'designation', 'address', 'mobile', 'email', 'officeId', 'districtOfficeId', 'joiningDate', 'status', 'resignationDate', 'profilePhotoPath', 'role', 'approvalStatus', 'boundDeviceId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'designation', 'address', 'mobile', 'email', 'officeId', 'districtOfficeId', 'additionalOfficeIds', 'joiningDate', 'status', 'resignationDate', 'profilePhotoPath', 'role', 'approvalStatus', 'boundDeviceId', 'createdAt', 'updatedAt'])
         && (!('uid' in data) || isOptString(data.uid, 128))
         && (!('name' in data) || isOptString(data.name, 120))
         && (!('designation' in data) || isOptString(data.designation, 120))
@@ -123,6 +152,7 @@ service cloud.firestore {
         && (!('email' in data) || isOptString(data.email, 160))
         && (!('officeId' in data) || isOptString(data.officeId, 128))
         && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
+        && isOptAdditionalOfficeIds(data)
         && (!('joiningDate' in data) || data.joiningDate == null || data.joiningDate is timestamp || isValidDateStr(data.joiningDate))
         && data.status in ['active', 'resigned']
         && (!('resignationDate' in data) || data.resignationDate == null || data.resignationDate is timestamp || isValidDateStr(data.resignationDate))
@@ -322,14 +352,20 @@ service cloud.firestore {
         isOwner(userId)
         || isSuperAdmin()
         || (isOfficeHead() && existing().officeId == callerData().officeId)
-        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          ('officeId' in existing() && isCallerOfficeInScope(existing().officeId))
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        ))
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
         || isSuperAdmin()
         || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          ('officeId' in resource.data && isCallerOfficeInScope(resource.data.officeId))
+          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
+        ))
       );
 
       allow create: if isValidId(userId)
@@ -384,7 +420,10 @@ service cloud.firestore {
           existing().uid == request.auth.uid
           || isSuperAdmin()
           || (isOfficeHead() && existing().officeId == callerData().officeId)
-          || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+          || (isDistrictOfficer() && (
+            isCallerOfficeInScope(existing().officeId)
+            || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+          ))
         ))
       );
 
@@ -392,7 +431,10 @@ service cloud.firestore {
         resource.data.uid == request.auth.uid
         || isSuperAdmin()
         || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(resource.data.officeId)
+          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
+        ))
       );
 
       allow create: if isValidId(attendanceId)
@@ -418,7 +460,10 @@ service cloud.firestore {
           // District officer settling a proposed absent date
           || (
             isDistrictOfficer()
-            && (incoming().officeId == callerData().officeId || incoming().districtOfficeId == callerData().officeId)
+            && (
+              isCallerOfficeInScope(incoming().officeId)
+              || ('districtOfficeId' in incoming() && isCallerOfficeInScope(incoming().districtOfficeId))
+            )
             && incoming().settled == true
             && incoming().finalStatus in ['On Time', 'Late', 'Leave', 'Absent']
             && incoming().settledBy == request.auth.uid
@@ -449,7 +494,10 @@ service cloud.firestore {
           // District officer settlement + photoDeleted marking
           || (
             isDistrictOfficer()
-            && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId)
+            && (
+              isCallerOfficeInScope(existing().officeId)
+              || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+            )
             && incoming().settledBy == request.auth.uid
             && incoming().diff(existing()).affectedKeys().hasOnly(['finalStatus', 'settled', 'settledBy', 'settledByName', 'settledAt', 'districtComment', 'photoDeleted', 'photoDeletedAt', 'checkIn', 'checkOut', 'updatedAt'])
           )
@@ -469,19 +517,28 @@ service cloud.firestore {
       allow get: if isValidId(settlementId) && isSignedIn() && (
         existing().employeeUid == request.auth.uid
         || isSuperAdmin()
-        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(existing().officeId)
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        ))
       );
 
       allow list: if isSignedIn() && (
         resource.data.employeeUid == request.auth.uid
         || isSuperAdmin()
-        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(resource.data.officeId)
+          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
+        ))
       );
 
       allow create: if isValidId(settlementId)
         && isDistrictOfficer()
         && isValidSettlement(incoming())
-        && (incoming().officeId == callerData().officeId || incoming().districtOfficeId == callerData().officeId)
+        && (
+          isCallerOfficeInScope(incoming().officeId)
+          || ('districtOfficeId' in incoming() && isCallerOfficeInScope(incoming().districtOfficeId))
+        )
         && incoming().settledBy == request.auth.uid
         && incoming().settledAt == request.time;
 
@@ -494,14 +551,20 @@ service cloud.firestore {
         existing().uid == request.auth.uid
         || isSuperAdmin()
         || (isOfficeHead() && existing().officeId == callerData().officeId)
-        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(existing().officeId)
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        ))
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
         || isSuperAdmin()
         || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(resource.data.officeId)
+          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
+        ))
       );
 
       allow create: if isValidId(leaveId)
@@ -514,7 +577,10 @@ service cloud.firestore {
       allow update: if isValidId(leaveId)
         && isDistrictOfficer()
         && isValidLeave(incoming())
-        && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId)
+        && (
+          isCallerOfficeInScope(existing().officeId)
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        )
         && existing().status == 'pending'
         && incoming().status in ['approved', 'rejected']
         && incoming().reviewedBy == request.auth.uid
@@ -530,14 +596,20 @@ service cloud.firestore {
         existing().uid == request.auth.uid
         || isSuperAdmin()
         || (isOfficeHead() && existing().officeId == callerData().officeId)
-        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(existing().officeId)
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        ))
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
         || isSuperAdmin()
         || (isOfficeHead() && resource.data.officeId == callerData().officeId)
-        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(resource.data.officeId)
+          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
+        ))
       );
 
       allow create: if isValidId(fieldDutyId)
@@ -550,7 +622,10 @@ service cloud.firestore {
       allow update: if isValidId(fieldDutyId)
         && isDistrictOfficer()
         && isValidFieldDuty(incoming())
-        && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId)
+        && (
+          isCallerOfficeInScope(existing().officeId)
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        )
         && existing().status == 'pending'
         && incoming().status in ['approved', 'rejected']
         && incoming().reviewedBy == request.auth.uid
@@ -577,19 +652,28 @@ service cloud.firestore {
       allow get: if isValidId(reportId) && isSignedIn() && (
         isHeadOffice()
         || isSuperAdmin()
-        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(existing().officeId)
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        ))
       );
 
       allow list: if isSignedIn() && (
         isHeadOffice()
         || isSuperAdmin()
-        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          isCallerOfficeInScope(resource.data.officeId)
+          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
+        ))
       );
 
       allow create: if isValidId(reportId)
         && isDistrictOfficer()
         && isValidReport(incoming())
-        && (incoming().officeId == callerData().officeId || incoming().districtOfficeId == callerData().officeId)
+        && (
+          isCallerOfficeInScope(incoming().officeId)
+          || ('districtOfficeId' in incoming() && isCallerOfficeInScope(incoming().districtOfficeId))
+        )
         && incoming().generatedBy == request.auth.uid
         && incoming().submittedAt == request.time;
 
@@ -600,12 +684,18 @@ service cloud.firestore {
     match /auditLogs/{logId} {
       allow get: if isValidId(logId) && isSignedIn() && (
         isSuperAdmin()
-        || (isDistrictOfficer() && (existing().officeId == callerData().officeId || existing().districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          ('officeId' in existing() && isCallerOfficeInScope(existing().officeId))
+          || ('districtOfficeId' in existing() && isCallerOfficeInScope(existing().districtOfficeId))
+        ))
       );
 
       allow list: if isSignedIn() && (
         isSuperAdmin()
-        || (isDistrictOfficer() && (resource.data.officeId == callerData().officeId || resource.data.districtOfficeId == callerData().officeId))
+        || (isDistrictOfficer() && (
+          ('officeId' in resource.data && isCallerOfficeInScope(resource.data.officeId))
+          || ('districtOfficeId' in resource.data && isCallerOfficeInScope(resource.data.districtOfficeId))
+        ))
       );
 
       allow create: if isValidId(logId)

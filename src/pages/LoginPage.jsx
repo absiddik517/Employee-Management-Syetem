@@ -35,7 +35,7 @@ export default function LoginPage() {
       if (result?.needsProfileSetup) {
         navigate('/complete-profile', { replace: true });
       } else if (result?.profile) {
-        navigate(getRoleHomePath(result.profile), { replace: true });
+        navigate(getRoleHomePath(result.profile, result.resolvedActiveOfficeId), { replace: true });
       }
     } catch {
       // Error surfaced from AuthContext

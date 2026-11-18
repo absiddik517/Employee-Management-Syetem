@@ -302,6 +302,10 @@ export default function UsersPage() {
 
       updateTask('write', 'running', `Saving users/${targetUid}...`);
       const districtOfficeId = computeDistrictOfficeId(newUser.officeId);
+      const additionalOfficeIds =
+        newUser.role === 'district_officer' && Array.isArray(newUser.additionalOfficeIds)
+          ? Array.from(new Set(newUser.additionalOfficeIds.filter((id) => id && id !== newUser.officeId))).slice(0, 20)
+          : [];
       try {
         await writeUserDocument(targetUid, {
           uid: targetUid,
@@ -312,6 +316,7 @@ export default function UsersPage() {
           email: normalizedEmail,
           officeId: newUser.officeId || '',
           districtOfficeId,
+          additionalOfficeIds,
           joiningDate: newUser.joiningDate,
           status: 'active',
           resignationDate: null,
@@ -495,6 +500,10 @@ export default function UsersPage() {
 
       updateTask('write', 'running', `Writing users/${targetUid}...`);
       const districtOfficeId = computeDistrictOfficeId(linkForm.officeId);
+      const additionalOfficeIds =
+        linkForm.role === 'district_officer' && Array.isArray(linkForm.additionalOfficeIds)
+          ? Array.from(new Set(linkForm.additionalOfficeIds.filter((id) => id && id !== linkForm.officeId))).slice(0, 20)
+          : [];
       try {
         await writeUserDocument(targetUid, {
           uid: targetUid,
@@ -505,6 +514,7 @@ export default function UsersPage() {
           email: targetEmail,
           officeId: linkForm.officeId || '',
           districtOfficeId,
+          additionalOfficeIds,
           joiningDate: linkForm.joiningDate,
           status: linkForm.status,
           resignationDate: linkForm.status === 'resigned' ? getTodayDhaka() : null,
@@ -639,12 +649,17 @@ export default function UsersPage() {
     try {
       const officeId = formValues.officeId || '';
       const districtOfficeId = computeDistrictOfficeId(officeId);
+      const additionalOfficeIds =
+        formValues.role === 'district_officer' && Array.isArray(formValues.additionalOfficeIds)
+          ? Array.from(new Set(formValues.additionalOfficeIds.filter((id) => id && id !== officeId))).slice(0, 20)
+          : [];
       const patch = {
         name: formValues.name.trim(),
         designation: formValues.designation.trim(),
         mobile: formValues.mobile.trim(),
         officeId,
         districtOfficeId,
+        additionalOfficeIds,
         address: formValues.address.trim(),
         joiningDate: formValues.joiningDate,
         role: formValues.role,

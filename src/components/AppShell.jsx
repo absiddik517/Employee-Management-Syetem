@@ -1,20 +1,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Clock,
+  ArrowLeftRight,
+  BarChart3,
+  Briefcase,
+  Building2,
   CalendarDays,
-  FileText,
+  CalendarOff,
   CheckSquare,
   ClipboardCheck,
-  BarChart3,
-  Building2,
-  Users,
-  CalendarOff,
+  Clock,
+  Eye,
+  FileText,
   LayoutDashboard,
   LogOut,
-  Eye,
+  Moon,
   Sun,
-  Moon
+  Users
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getTodayDhaka, formatDisplayDate } from '../utils/dhakaTime.js';
@@ -25,6 +27,7 @@ const ROUTE_TITLES = {
   '/employee/history': 'Attendance History',
   '/employee/requests': 'Leave & Field Duty',
   '/office-head': 'Office Attendance',
+  '/select-office': 'অফিস নির্বাচন',
   '/district': 'Settlement Dashboard',
   '/district/approvals': 'Leave & Field Approvals',
   '/district/reports': 'Monthly Reports',
@@ -32,11 +35,19 @@ const ROUTE_TITLES = {
   '/admin': 'Super Admin',
   '/admin/offices': 'Offices',
   '/admin/users': 'Users & Devices',
+  '/admin/additional-charge': 'Additional Charge',
   '/admin/holidays': 'Holidays'
 };
 
 export default function AppShell({ title, showThemeToggle = false, children }) {
-  const { profile, userOffice, logout } = useAuth();
+  const {
+    profile,
+    userOffice,
+    hasMultipleOffices,
+    activeChargeType,
+    assignedOffices,
+    logout
+  } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -93,6 +104,7 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
         { to: '/admin', label: 'Overview', shortLabel: 'Home', Icon: LayoutDashboard },
         { to: '/admin/offices', label: 'Offices', shortLabel: 'Offices', Icon: Building2 },
         { to: '/admin/users', label: 'Users & Devices', shortLabel: 'Users', Icon: Users },
+        { to: '/admin/additional-charge', label: 'Additional Charge', shortLabel: 'Charge', Icon: Briefcase },
         { to: '/admin/holidays', label: 'Holidays', shortLabel: 'Holidays', Icon: CalendarOff }
       ];
     }
@@ -103,6 +115,8 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
     await logout();
     navigate('/login');
   };
+
+  const chargeBadgeLabel = activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব';
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col lg:flex-row transition-colors">
@@ -140,8 +154,35 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
           <div className="text-xs text-slate-600 dark:text-slate-300">
             <div className="font-semibold text-slate-900 dark:text-slate-100 truncate">{profile?.name}</div>
             <div className="truncate text-slate-500 dark:text-slate-400">{profile?.designation}</div>
-            {userOffice && <div className="truncate text-slate-500 dark:text-slate-400 mt-0.5">{userOffice.name}</div>}
+            {userOffice && (
+              <div className="mt-1.5 space-y-0.5">
+                <div className="truncate font-medium text-slate-700 dark:text-slate-200">{userOffice.name}</div>
+                {hasMultipleOffices && (
+                  <div
+                    className={`text-[11px] font-semibold ${
+                      activeChargeType === 'additional'
+                        ? 'text-amber-700 dark:text-amber-300'
+                        : 'text-[#0b6b4f] dark:text-[#4fd1a1]'
+                    }`}
+                  >
+                    {chargeBadgeLabel} ({assignedOffices.length}টি অফিস)
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
+          {hasMultipleOffices && (
+            <button
+              type="button"
+              onClick={() => navigate('/select-office')}
+              className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-[#0b6b4f]/30 dark:border-[#4fd1a1]/30 bg-[#0b6b4f]/8 dark:bg-[#4fd1a1]/10 text-xs font-semibold text-[#0b6b4f] dark:text-[#4fd1a1] hover:bg-[#0b6b4f]/15 dark:hover:bg-[#4fd1a1]/20 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+            >
+              <ArrowLeftRight className="w-4 h-4 shrink-0" />
+              <span>অফিস পরিবর্তন করুন</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={handleLogout}
@@ -166,6 +207,17 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
               <span className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{currentTitle}</span>
             </div>
             <div className="flex items-center gap-1 shrink-0">
+              {hasMultipleOffices && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/select-office')}
+                  aria-label="অফিস পরিবর্তন করুন"
+                  className="min-h-[44px] px-2.5 inline-flex items-center gap-1 rounded-xl text-xs font-semibold text-[#0b6b4f] dark:text-[#4fd1a1] hover:bg-[#0b6b4f]/10 dark:hover:bg-[#4fd1a1]/15 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                >
+                  <ArrowLeftRight className="w-4 h-4 shrink-0" />
+                  <span>অফিস</span>
+                </button>
+              )}
               {showThemeToggle && (
                 <button
                   type="button"
@@ -202,6 +254,16 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
               </h1>
             </div>
             <div className="flex items-center gap-3 shrink-0">
+              {hasMultipleOffices && userOffice && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/select-office')}
+                  className="min-h-[44px] px-3 inline-flex items-center gap-2 rounded-xl border border-[#0b6b4f]/30 dark:border-[#4fd1a1]/30 bg-[#0b6b4f]/8 dark:bg-[#4fd1a1]/10 text-xs font-semibold text-[#0b6b4f] dark:text-[#4fd1a1] hover:bg-[#0b6b4f]/15 dark:hover:bg-[#4fd1a1]/20 transition-colors max-w-[260px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{userOffice.name}</span>
+                </button>
+              )}
               <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                 <span>{todayDisplay}</span>
                 <span aria-hidden="true">·</span>
@@ -229,6 +291,36 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
             </div>
           </div>
         </header>
+
+        {/* Active Office Strip for Multi-Office District Officers (Mobile & Tablet) */}
+        {hasMultipleOffices && userOffice && (
+          <div className="lg:hidden bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-2 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                সক্রিয় কর্মক্ষেত্র ·{' '}
+                <span
+                  className={
+                    activeChargeType === 'additional'
+                      ? 'text-amber-700 dark:text-amber-300'
+                      : 'text-[#0b6b4f] dark:text-[#4fd1a1]'
+                  }
+                >
+                  {chargeBadgeLabel}
+                </span>
+              </div>
+              <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                {userOffice.name}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/select-office')}
+              className="min-h-[44px] px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-[#0b6b4f] dark:text-[#4fd1a1] shrink-0 whitespace-nowrap"
+            >
+              পরিবর্তন করুন
+            </button>
+          </div>
+        )}
 
         {/* Offline Warning Banner (Bangla) */}
         {!isOnline && (

@@ -7,7 +7,7 @@ import { useData } from '../../context/DataContext.jsx';
 import { db, OperationType, handleFirestoreError } from '../../firebase/config.js';
 
 export default function DistrictApprovalsPage() {
-  const { profile, offices } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType } = useAuth();
   const { logAudit } = useData();
 
   const [tab, setTab] = useState('leaves');
@@ -18,7 +18,13 @@ export default function DistrictApprovalsPage() {
   const [feedbackMsg, setFeedbackMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const myOfficeId = profile?.officeId || '';
+  const myOfficeId = activeOfficeId || profile?.officeId || '';
+
+  useEffect(() => {
+    setComments({});
+    setFeedbackMsg('');
+    setErrorMsg('');
+  }, [myOfficeId]);
 
   const officeName = useCallback(
     (id) => offices.find((o) => o.id === id)?.name || id,
@@ -101,6 +107,23 @@ export default function DistrictApprovalsPage() {
   return (
     <AppShell>
       <div className="space-y-4">
+        {activeOffice && (
+          <div className="bg-white rounded-2xl border border-slate-200 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-semibold text-slate-700">
+              কার্যালয়: <span className="text-slate-900 font-bold">{activeOffice.name}</span>
+            </div>
+            <span
+              className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
+                activeChargeType === 'additional'
+                  ? 'bg-amber-100 text-amber-800'
+                  : 'bg-emerald-100 text-emerald-800'
+              }`}
+            >
+              {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'}
+            </span>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-1 p-1 bg-slate-200/70 rounded-xl">
           <button
             type="button"
