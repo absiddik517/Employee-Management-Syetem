@@ -34,6 +34,7 @@ const ROUTE_TITLES = {
   '/employee': 'Daily Attendance',
   '/employee/history': 'Attendance History',
   '/employee/requests': 'Leave & Field Duty',
+  '/employees': 'Employees',
   '/office-head': 'Office Portal',
   '/select-office': 'অফিস নির্বাচন',
   '/district': 'Settlement Dashboard',
@@ -121,6 +122,19 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
     const isOfficePortal =
       normalizedRole === ROLES.unfeo.key || (!isTechnicalAdmin && permissionScope('report.create') === 'office');
     const isAllOversight = !isTechnicalAdmin && !isSubtreeManager && !isOfficePortal && reportScope === 'all';
+    const hasUserManagementPerm =
+      can('user.approve') ||
+      can('user.resetDevice') ||
+      can('user.edit') ||
+      can('user.role.assign') ||
+      can('user.delete');
+    const isDirectoryRole = [
+      ROLES.employee.key,
+      ROLES.unfeo.key,
+      ROLES.assistant_director.key,
+      ROLES.head_office_officer.key,
+      ROLES.director_general.key
+    ].includes(normalizedRole);
 
     if (isTechnicalAdmin) {
       if (can('settings.manage') || can('attendance.photo.purge')) {
@@ -154,8 +168,9 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       if (can('report.create')) {
         pushItem({ to: '/district/reports', label: 'Monthly Reports', shortLabel: 'Dashboard', Icon: BarChart3 });
       }
-      if (can('user.view')) {
-        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Employee', Icon: Users });
+      pushItem({ to: '/employees', label: 'Employees', shortLabel: 'Employee', Icon: Users });
+      if (can('user.view') && hasUserManagementPerm) {
+        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Users', Icon: Users });
       }
       if (can('audit.view')) {
         pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
@@ -164,22 +179,24 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       if (can('report.create') || can('leave.review') || can('attendance.view')) {
         pushItem({ to: '/office-head', label: 'Office Portal', shortLabel: 'Dashboard', Icon: LayoutDashboard });
       }
-      if (can('user.view')) {
-        pushItem({ to: '/admin/users', label: 'Staff & Devices', shortLabel: 'Employee', Icon: Users });
-      }
+      pushItem({ to: '/employees', label: 'Employees', shortLabel: 'Employee', Icon: Users });
       if (can('leave.review') || can('fieldduty.review')) {
         pushItem({ to: '/district/approvals', label: 'Approvals', shortLabel: 'Application', Icon: ClipboardCheck });
       }
       if (can('report.create')) {
         pushItem({ to: '/district/reports', label: 'Monthly Reports', shortLabel: 'Reports', Icon: BarChart3 });
       }
+      if (can('user.view') && hasUserManagementPerm) {
+        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Users', Icon: Users });
+      }
       if (can('audit.view')) {
         pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
       }
     } else if (isAllOversight) {
       pushItem({ to: '/head-office', label: 'Oversight Portal', shortLabel: 'Dashboard', Icon: BarChart3 });
-      if (can('user.view')) {
-        pushItem({ to: '/admin/users', label: 'Staff Directory', shortLabel: 'Employee', Icon: Users });
+      pushItem({ to: '/employees', label: 'Employees', shortLabel: 'Employee', Icon: Users });
+      if (can('user.view') && hasUserManagementPerm) {
+        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Users', Icon: Users });
       }
       if (can('audit.view')) {
         pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
@@ -202,8 +219,11 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
     if (can('fieldduty.review') || can('leave.review')) {
       pushItem({ to: '/district/approvals', label: 'Approvals', shortLabel: 'Application', Icon: ClipboardCheck });
     }
-    if (can('user.view')) {
-      pushItem({ to: '/admin/users', label: 'Staff Directory', shortLabel: 'Employee', Icon: Users });
+    if (isDirectoryRole) {
+      pushItem({ to: '/employees', label: 'Employees', shortLabel: 'Employee', Icon: Users });
+    }
+    if (can('user.view') && (isTechnicalAdmin || hasUserManagementPerm)) {
+      pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Users', Icon: Users });
     }
     if (can('report.view') && !isOfficePortal && !isSubtreeManager && !isAllOversight) {
       pushItem({ to: '/head-office', label: 'Reports', shortLabel: 'Reports', Icon: BarChart3 });
@@ -262,8 +282,8 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       normalizedRole === ROLES.assistant_director.key ||
       normalizedRole === ROLES.unfeo.key
     ) {
-      // 2. Assistant Director, UNFEO: Employee, Application, Dashboard, Settle (hide if unavailable), More
-      pick('/admin/users', 'Employee', Users);
+      // 2. Assistant Director, UNFEO: Employee (directory), Application, Dashboard, Settle (hide if unavailable), More
+      pick('/employees', 'Employee', Users);
       if (byPath.has('/district/approvals')) {
         pick('/district/approvals', 'Application', ClipboardCheck);
       } else {
@@ -291,13 +311,13 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       normalizedRole === ROLES.director_general.key ||
       normalizedRole === ROLES.head_office_officer.key
     ) {
-      pick('/admin/users', 'Employee', Users);
+      pick('/employees', 'Employee', Users);
       pick('/head-office', 'Dashboard', BarChart3);
       pick('/audit', 'Audit', History);
       pick('/employee', 'Today', Clock);
     } else {
-      // 3. Employee: Employee (if user.view granted), History, Today, Application, More
-      pick('/admin/users', 'Employee', Users);
+      // 3. Employee: Employee (directory), History, Today, Application, More
+      pick('/employees', 'Employee', Users);
       pick('/employee/history', 'History', CalendarDays);
       pick('/employee', 'Today', Clock);
       pick('/employee/requests', 'Application', FileText);

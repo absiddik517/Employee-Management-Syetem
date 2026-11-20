@@ -512,16 +512,36 @@ service cloud.firestore {
       allow delete: if isValidId(officeId) && hasPerm('office.manage');
     }
 
+    function callerOfficeIsHead() {
+      return isApprovedActiveUser()
+        && 'officeId' in callerData()
+        && callerData().officeId is string
+        && callerData().officeId != ''
+        && exists(/databases/$(database)/documents/offices/$(callerData().officeId))
+        && get(/databases/$(database)/documents/offices/$(callerData().officeId)).data.level == 'head';
+    }
+
+    function canViewOfficeDirectoryDoc(docData) {
+      return isApprovedActiveUser()
+        && callerRole() in ['employee', 'unfeo', 'assistant_director', 'head_office_officer', 'director_general']
+        && (
+          inSubtreeScope(docOfficeId(docData), docDistrictOfficeId(docData))
+          || callerOfficeIsHead()
+        );
+    }
+
     // Users: strict PII protection, scoped visibility & hierarchy updates
     match /users/{userId} {
       allow get: if isValidId(userId) && isSignedIn() && (
         isOwner(userId)
         || (hasPerm('user.view') && matchesDocScope('user.view', userId, docOfficeId(existing()), docDistrictOfficeId(existing())))
+        || canViewOfficeDirectoryDoc(existing())
       );
 
       allow list: if isSignedIn() && (
         resource.data.uid == request.auth.uid
         || (hasPerm('user.view') && matchesDocScope('user.view', resource.data.uid, docOfficeId(resource.data), docDistrictOfficeId(resource.data)))
+        || canViewOfficeDirectoryDoc(resource.data)
       );
 
       allow create: if isValidId(userId)

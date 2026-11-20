@@ -837,4 +837,36 @@ test('Employee attendance check-in (create) and check-out (update) enforce devic
   );
 });
 
+test('Employee directory read rules allow own office and subordinate offices only, without write permissions', async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, 'users', 'emp_dist1'), makeUser('emp_dist1', 'employee', 'dist1', { districtOfficeId: 'dist1' }));
+    await setDoc(doc(db, 'users', 'emp_head'), makeUser('emp_head', 'employee', 'head', { districtOfficeId: '' }));
+  });
+
+  const empUpzDb = testEnv.authenticatedContext('emp1').firestore();
+  const empDistDb = testEnv.authenticatedContext('emp_dist1').firestore();
+  const empHeadDb = testEnv.authenticatedContext('emp_head').firestore();
+
+  // Upazila employee can view own office staff (unfeo1) but not sibling upazila or district/head staff
+  await assertSucceeds(getDoc(doc(empUpzDb, 'users', 'unfeo1')));
+  await assertFails(getDoc(doc(empUpzDb, 'users', 'emp2')));
+  await assertFails(getDoc(doc(empUpzDb, 'users', 'emp_dist1')));
+  await assertFails(getDoc(doc(empUpzDb, 'users', 'emp_head')));
+
+  // District employee can view own district and subordinate upazila staff (emp1) but not other districts
+  await assertSucceeds(getDoc(doc(empDistDb, 'users', 'emp1')));
+  await assertFails(getDoc(doc(empDistDb, 'users', 'emp_d2')));
+
+  // Head office employee can view staff across head and subordinate offices, but cannot edit/delete
+  await assertSucceeds(getDoc(doc(empHeadDb, 'users', 'emp1')));
+  await assertFails(
+    updateDoc(doc(empHeadDb, 'users', 'emp1'), {
+      name: 'Tampered',
+      updatedAt: serverTimestamp()
+    })
+  );
+});
+
+
 

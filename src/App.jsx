@@ -26,6 +26,7 @@ import AdminUsersPage from './pages/admin/AdminUsersPage.jsx';
 import AdminHolidaysPage from './pages/admin/AdminHolidaysPage.jsx';
 import AdminAdditionalChargePage from './pages/admin/AdminAdditionalChargePage.jsx';
 import AdminRolePermissionsPage from './pages/admin/AdminRolePermissionsPage.jsx';
+import EmployeeDirectoryPage from './pages/EmployeeDirectoryPage.jsx';
 import AuditLogPage from './pages/AuditLogPage.jsx';
 
 function GuestRoute({ children }) {
@@ -247,7 +248,17 @@ export default function App() {
           }
         />
 
-        {/* Users & Devices (permission- and scope-enforced across Super Admin, AD, UNFEO, DG, HO Officer) */}
+        {/* Employee Directory (own office & subordinate offices — not user management) */}
+        <Route
+          path="/employees"
+          element={
+            <ProtectedRoute>
+              <EmployeeDirectoryPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Users & Devices (user management across Super Admin, AD, UNFEO) */}
         <Route
           path="/admin/users"
           element={
