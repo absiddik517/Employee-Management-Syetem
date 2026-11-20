@@ -8,7 +8,7 @@ import { getCurrentMonthDhaka } from '../../utils/dhakaTime.js';
 import { downloadReportCsv } from '../../utils/csv.js';
 
 export default function DistrictReportsPage() {
-  const { profile, offices, activeOfficeId, activeOffice, activeChargeType } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, permissionScope } = useAuth();
   const { logAudit } = useData();
 
   const myOfficeId = activeOfficeId || profile?.officeId || '';
@@ -34,10 +34,14 @@ export default function DistrictReportsPage() {
   }, [myOfficeId, managedOffices]);
 
   const loadSubmittedReports = useCallback(async () => {
-    if (!myOfficeId) return;
+    if (!myOfficeId || !can('report.view')) return;
     try {
+      const reportScope = permissionScope('report.view');
+      const isWide = reportScope === 'subtree' || reportScope === 'all';
       const [r1, r2] = await Promise.all([
-        getDocs(query(collection(db, 'reports'), where('districtOfficeId', '==', myOfficeId))),
+        isWide
+          ? getDocs(query(collection(db, 'reports'), where('districtOfficeId', '==', myOfficeId)))
+          : Promise.resolve({ docs: [] }),
         getDocs(query(collection(db, 'reports'), where('officeId', '==', myOfficeId)))
       ]);
       const map = new Map();
@@ -50,7 +54,7 @@ export default function DistrictReportsPage() {
     } catch (err) {
       console.warn('Reports load warning:', err);
     }
-  }, [myOfficeId]);
+  }, [myOfficeId, can, permissionScope]);
 
   useEffect(() => {
     loadSubmittedReports();

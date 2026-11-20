@@ -9,19 +9,24 @@ import {
   CalendarDays,
   CalendarOff,
   CheckSquare,
+  ChevronRight,
   ClipboardCheck,
   Clock,
   FileText,
   History,
   LayoutDashboard,
   LogOut,
+  Menu,
   Moon,
+  MoreHorizontal,
   ShieldAlert,
   ShieldCheck,
   Sun,
   Users
 } from 'lucide-react';
+import BottomSheet from './users/BottomSheet.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
+import { ROLES } from '../lib/permissions.js';
 import { getTodayDhaka, formatDisplayDate } from '../utils/dhakaTime.js';
 import { useTheme } from '../utils/theme.js';
 
@@ -47,6 +52,7 @@ const ROUTE_TITLES = {
 export default function AppShell({ title, showThemeToggle = false, children }) {
   const {
     profile,
+    normalizedRole,
     roleLabel,
     can,
     permissionScope,
@@ -60,6 +66,7 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
   const navigate = useNavigate();
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [unauthorizedToast, setUnauthorizedToast] = useState('');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { isDark, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -70,6 +77,20 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       window.removeEventListener('online', syncOnline);
       window.removeEventListener('offline', syncOnline);
     };
+  }, []);
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const handleChange = (e) => {
+      if (e.matches) setMobileMenuOpen(false);
+    };
+    mq.addEventListener('change', handleChange);
+    return () => mq.removeEventListener('change', handleChange);
   }, []);
 
   useEffect(() => {
@@ -93,57 +114,72 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
     };
 
     const reportScope = permissionScope('report.view');
-    const isTechnicalAdmin = can('settings.manage') || can('office.manage');
-    const isOfficePortal = permissionScope('report.create') === 'office';
-    const isSubtreeManager = can('attendance.settle');
-    const isAllOversight = !isTechnicalAdmin && reportScope === 'all';
+    const isTechnicalAdmin =
+      normalizedRole === ROLES.super_admin.key || can('settings.manage') || can('office.manage');
+    const isSubtreeManager =
+      normalizedRole === ROLES.assistant_director.key || (!isTechnicalAdmin && can('attendance.settle'));
+    const isOfficePortal =
+      normalizedRole === ROLES.unfeo.key || (!isTechnicalAdmin && permissionScope('report.create') === 'office');
+    const isAllOversight = !isTechnicalAdmin && !isSubtreeManager && !isOfficePortal && reportScope === 'all';
 
     if (isTechnicalAdmin) {
-      pushItem({ to: '/admin', label: 'Overview', shortLabel: 'Home', Icon: LayoutDashboard });
+      if (can('settings.manage') || can('attendance.photo.purge')) {
+        pushItem({ to: '/admin', label: 'Overview', shortLabel: 'Home', Icon: LayoutDashboard });
+      }
       if (can('office.manage')) {
-        pushItem({ to: '/admin/offices', label: 'Offices', shortLabel: 'Offices', Icon: Building2 });
+        pushItem({ to: '/admin/offices', label: 'Offices', shortLabel: 'Office', Icon: Building2 });
       }
       if (can('user.view')) {
-        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Users', Icon: Users });
+        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'User', Icon: Users });
       }
       if (can('user.edit') && permissionScope('user.edit') === 'all') {
-        pushItem({ to: '/admin/additional-charge', label: 'Additional Charge', shortLabel: 'Charge', Icon: Briefcase, desktopOnly: true });
+        pushItem({ to: '/admin/additional-charge', label: 'Additional Charge', shortLabel: 'Charge', Icon: Briefcase });
       }
       if (can('holiday.manage')) {
-        pushItem({ to: '/admin/holidays', label: 'Holidays', shortLabel: 'Holidays', Icon: CalendarOff, desktopOnly: true });
+        pushItem({ to: '/admin/holidays', label: 'Holidays', shortLabel: 'Holidays', Icon: CalendarOff });
       }
       if (can('settings.manage')) {
-        pushItem({ to: '/admin/permissions', label: 'Role Permissions', shortLabel: 'Perms', Icon: ShieldCheck });
+        pushItem({ to: '/admin/permissions', label: 'Role Permissions', shortLabel: 'Permission', Icon: ShieldCheck });
       }
       if (can('audit.view')) {
-        pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History, desktopOnly: true });
+        pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
       }
     } else if (isSubtreeManager) {
-      pushItem({ to: '/district', label: 'Settlement', shortLabel: 'Settle', Icon: CheckSquare });
+      if (can('attendance.settle')) {
+        pushItem({ to: '/district', label: 'Settlement', shortLabel: 'Settle', Icon: CheckSquare });
+      }
       if (can('fieldduty.review') || can('leave.review')) {
-        pushItem({ to: '/district/approvals', label: 'Approvals', shortLabel: 'Approve', Icon: ClipboardCheck });
+        pushItem({ to: '/district/approvals', label: 'Approvals', shortLabel: 'Application', Icon: ClipboardCheck });
       }
       if (can('report.create')) {
-        pushItem({ to: '/district/reports', label: 'Monthly Reports', shortLabel: 'Reports', Icon: BarChart3 });
+        pushItem({ to: '/district/reports', label: 'Monthly Reports', shortLabel: 'Dashboard', Icon: BarChart3 });
       }
       if (can('user.view')) {
-        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Users', Icon: Users });
+        pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'Employee', Icon: Users });
       }
       if (can('audit.view')) {
         pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
       }
     } else if (isOfficePortal) {
-      pushItem({ to: '/office-head', label: 'Office Portal', shortLabel: 'Office', Icon: Building2 });
+      if (can('report.create') || can('leave.review') || can('attendance.view')) {
+        pushItem({ to: '/office-head', label: 'Office Portal', shortLabel: 'Dashboard', Icon: LayoutDashboard });
+      }
       if (can('user.view')) {
-        pushItem({ to: '/admin/users', label: 'Staff & Devices', shortLabel: 'Staff', Icon: Users });
+        pushItem({ to: '/admin/users', label: 'Staff & Devices', shortLabel: 'Employee', Icon: Users });
+      }
+      if (can('leave.review') || can('fieldduty.review')) {
+        pushItem({ to: '/district/approvals', label: 'Approvals', shortLabel: 'Application', Icon: ClipboardCheck });
+      }
+      if (can('report.create')) {
+        pushItem({ to: '/district/reports', label: 'Monthly Reports', shortLabel: 'Reports', Icon: BarChart3 });
       }
       if (can('audit.view')) {
-        pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History, desktopOnly: true });
+        pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
       }
     } else if (isAllOversight) {
-      pushItem({ to: '/head-office', label: 'Oversight Portal', shortLabel: 'Oversight', Icon: BarChart3 });
+      pushItem({ to: '/head-office', label: 'Oversight Portal', shortLabel: 'Dashboard', Icon: BarChart3 });
       if (can('user.view')) {
-        pushItem({ to: '/admin/users', label: 'Staff Directory', shortLabel: 'Users', Icon: Users });
+        pushItem({ to: '/admin/users', label: 'Staff Directory', shortLabel: 'Employee', Icon: Users });
       }
       if (can('audit.view')) {
         pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
@@ -152,62 +188,142 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
 
     // Dynamic permission-driven extras for any role granted additional capabilities
     if (can('office.manage')) {
-      pushItem({ to: '/admin/offices', label: 'Offices', shortLabel: 'Offices', Icon: Building2, desktopOnly: true });
+      pushItem({ to: '/admin/offices', label: 'Offices', shortLabel: 'Office', Icon: Building2 });
     }
     if (can('holiday.manage')) {
-      pushItem({ to: '/admin/holidays', label: 'Holidays', shortLabel: 'Holidays', Icon: CalendarOff, desktopOnly: true });
+      pushItem({ to: '/admin/holidays', label: 'Holidays', shortLabel: 'Holidays', Icon: CalendarOff });
     }
     if (can('settings.manage')) {
-      pushItem({ to: '/admin/permissions', label: 'Role Permissions', shortLabel: 'Perms', Icon: ShieldCheck, desktopOnly: true });
+      pushItem({ to: '/admin/permissions', label: 'Role Permissions', shortLabel: 'Permission', Icon: ShieldCheck });
     }
     if (can('attendance.settle')) {
-      pushItem({ to: '/district', label: 'Settlement', shortLabel: 'Settle', Icon: CheckSquare, desktopOnly: true });
+      pushItem({ to: '/district', label: 'Settlement', shortLabel: 'Settle', Icon: CheckSquare });
     }
-    if (can('fieldduty.review')) {
-      pushItem({ to: '/district/approvals', label: 'Approvals', shortLabel: 'Approve', Icon: ClipboardCheck, desktopOnly: true });
+    if (can('fieldduty.review') || can('leave.review')) {
+      pushItem({ to: '/district/approvals', label: 'Approvals', shortLabel: 'Application', Icon: ClipboardCheck });
     }
     if (can('user.view')) {
-      pushItem({ to: '/admin/users', label: 'Staff Directory', shortLabel: 'Users', Icon: Users });
+      pushItem({ to: '/admin/users', label: 'Staff Directory', shortLabel: 'Employee', Icon: Users });
     }
     if (can('report.view') && !isOfficePortal && !isSubtreeManager && !isAllOversight) {
       pushItem({ to: '/head-office', label: 'Reports', shortLabel: 'Reports', Icon: BarChart3 });
     }
     if (can('audit.view')) {
-      pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History, desktopOnly: true });
+      pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
     }
     if (can('attendance.checkin')) {
       const hasPrimaryPortal = isTechnicalAdmin || isSubtreeManager || isOfficePortal || isAllOversight;
       pushItem({
         to: '/employee',
         label: hasPrimaryPortal ? 'My Attendance' : 'Attendance',
-        shortLabel: hasPrimaryPortal ? 'Punch' : 'Today',
-        Icon: Clock,
-        desktopOnly: isTechnicalAdmin || isSubtreeManager
+        shortLabel: 'Today',
+        Icon: Clock
       });
-      if (!hasPrimaryPortal) {
-        pushItem({ to: '/employee/history', label: 'Monthly History', shortLabel: 'History', Icon: CalendarDays });
-      }
+      pushItem({
+        to: '/employee/history',
+        label: 'Monthly History',
+        shortLabel: 'History',
+        Icon: CalendarDays
+      });
     }
     if (can('leave.apply') || can('fieldduty.apply')) {
       const hasPrimaryPortal = isTechnicalAdmin || isSubtreeManager || isOfficePortal || isAllOversight;
       pushItem({
         to: '/employee/requests',
         label: hasPrimaryPortal ? 'My Leave / Field Duty' : 'Leave & Field Duty',
-        shortLabel: 'Requests',
-        Icon: FileText,
-        desktopOnly: isTechnicalAdmin || isSubtreeManager || (isAllOversight && can('audit.view'))
+        shortLabel: 'Application',
+        Icon: FileText
       });
     }
 
     return items;
-  }, [can, permissionScope]);
+  }, [normalizedRole, can, permissionScope]);
 
-  const mobileNavItems = useMemo(
-    () => navItems.filter((item) => !item.desktopOnly).slice(0, 5),
-    [navItems]
-  );
+  const { mobilePrimaryItems, overflowNavItems, isOverflowRouteActive } = useMemo(() => {
+    const byPath = new Map(navItems.map((item) => [item.to, item]));
+    const picked = [];
+    const pick = (to, shortLabelOverride, IconOverride) => {
+      const base = byPath.get(to);
+      if (!base || picked.some((p) => p.to === to)) return;
+      picked.push({
+        ...base,
+        shortLabel: shortLabelOverride || base.shortLabel || base.label,
+        Icon: IconOverride || base.Icon
+      });
+    };
+
+    if (normalizedRole === ROLES.super_admin.key) {
+      // 1. Super admin: Office, User, Home, Permission, More
+      pick('/admin/offices', 'Office', Building2);
+      pick('/admin/users', 'User', Users);
+      pick('/admin', 'Home', LayoutDashboard);
+      pick('/admin/permissions', 'Permission', ShieldCheck);
+    } else if (
+      normalizedRole === ROLES.assistant_director.key ||
+      normalizedRole === ROLES.unfeo.key
+    ) {
+      // 2. Assistant Director, UNFEO: Employee, Application, Dashboard, Settle (hide if unavailable), More
+      pick('/admin/users', 'Employee', Users);
+      if (byPath.has('/district/approvals')) {
+        pick('/district/approvals', 'Application', ClipboardCheck);
+      } else {
+        pick('/employee/requests', 'Application', FileText);
+      }
+
+      if (normalizedRole === ROLES.unfeo.key) {
+        if (byPath.has('/office-head')) {
+          pick('/office-head', 'Dashboard', LayoutDashboard);
+        } else if (byPath.has('/district/reports')) {
+          pick('/district/reports', 'Dashboard', BarChart3);
+        }
+      } else {
+        if (byPath.has('/district/reports')) {
+          pick('/district/reports', 'Dashboard', BarChart3);
+        } else if (byPath.has('/office-head')) {
+          pick('/office-head', 'Dashboard', LayoutDashboard);
+        }
+      }
+
+      if (can('attendance.settle')) {
+        pick('/district', 'Settle', CheckSquare);
+      }
+    } else if (
+      normalizedRole === ROLES.director_general.key ||
+      normalizedRole === ROLES.head_office_officer.key
+    ) {
+      pick('/admin/users', 'Employee', Users);
+      pick('/head-office', 'Dashboard', BarChart3);
+      pick('/audit', 'Audit', History);
+      pick('/employee', 'Today', Clock);
+    } else {
+      // 3. Employee: Employee (if user.view granted), History, Today, Application, More
+      pick('/admin/users', 'Employee', Users);
+      pick('/employee/history', 'History', CalendarDays);
+      pick('/employee', 'Today', Clock);
+      pick('/employee/requests', 'Application', FileText);
+    }
+
+    // Fallback: if dynamic permission overrides removed standard tabs, fill up to 4 from remaining navItems
+    if (picked.length === 0) {
+      for (const item of navItems) {
+        if (picked.length >= 4) break;
+        picked.push(item);
+      }
+    }
+
+    const pickedPaths = new Set(picked.map((p) => p.to));
+    const overflow = navItems.filter((item) => !pickedPaths.has(item.to));
+    const overflowActive = overflow.some((item) => item.to === location.pathname);
+
+    return {
+      mobilePrimaryItems: picked,
+      overflowNavItems: overflow,
+      isOverflowRouteActive: overflowActive
+    };
+  }, [navItems, normalizedRole, can, location.pathname]);
 
   const handleLogout = async () => {
+    setMobileMenuOpen(false);
     await logout();
     navigate('/login');
   };
@@ -294,26 +410,25 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       <div className="flex-1 flex flex-col lg:pl-64 min-w-0">
         {/* Mobile & Tablet Top Bar */}
         <header className="sticky top-0 z-30 pt-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 lg:hidden">
-          <div className="h-14 px-4 flex items-center justify-between gap-2">
-            <div className="min-w-0 flex items-center gap-2">
+          <div className="h-14 px-3 sm:px-4 flex items-center justify-between gap-2">
+            <div className="min-w-0 flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="Open navigation menu"
+                aria-expanded={mobileMenuOpen}
+                aria-controls="mobile-navigation-menu"
+                className="min-h-[44px] min-w-[44px] -ml-1 inline-flex items-center justify-center rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
               <span className="text-base font-bold text-[#0b6b4f] dark:text-[#4fd1a1] font-display whitespace-nowrap shrink-0">
                 EMS
               </span>
-              <span className="text-slate-300 dark:text-slate-700" aria-hidden="true">/</span>
+              <span className="text-slate-300 dark:text-slate-700 shrink-0" aria-hidden="true">/</span>
               <span className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{currentTitle}</span>
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              {hasMultipleOffices && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/select-office')}
-                  aria-label="অফিস পরিবর্তন করুন"
-                  className="min-h-[44px] px-2.5 inline-flex items-center gap-1 rounded-xl text-xs font-semibold text-[#0b6b4f] dark:text-[#4fd1a1] hover:bg-[#0b6b4f]/10 dark:hover:bg-[#4fd1a1]/15 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-                >
-                  <ArrowLeftRight className="w-4 h-4 shrink-0" />
-                  <span>অফিস</span>
-                </button>
-              )}
               {showThemeToggle && (
                 <button
                   type="button"
@@ -328,9 +443,9 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
                 type="button"
                 onClick={handleLogout}
                 aria-label="Exit"
-                className="min-h-[44px] min-w-[44px] px-2 flex items-center justify-center gap-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                className="min-h-[44px] min-w-[44px] px-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOut className="w-4 h-4 shrink-0" />
                 <span>Exit</span>
               </button>
             </div>
@@ -432,38 +547,196 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       </div>
 
       {/* Mobile Fixed Bottom Navigation Bar */}
-      {mobileNavItems.length > 0 && (
+      {(mobilePrimaryItems.length > 0 || navItems.length > 0) && (
         <nav
           className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 pb-safe"
           aria-label="Primary Navigation"
         >
           <div
             className="grid items-center h-16"
-            style={{ gridTemplateColumns: `repeat(${mobileNavItems.length}, minmax(0, 1fr))` }}
+            style={{
+              gridTemplateColumns: `repeat(${mobilePrimaryItems.length + 1}, minmax(0, 1fr))`
+            }}
           >
-            {mobileNavItems.map((item) => {
+            {mobilePrimaryItems.map((item) => {
               const active = location.pathname === item.to;
               const Icon = item.Icon;
               return (
                 <Link
                   key={item.to}
                   to={item.to}
-                  className={`min-h-[44px] flex flex-col items-center justify-center px-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                  aria-current={active ? 'page' : undefined}
+                  className={`relative min-h-[44px] h-full flex flex-col items-center justify-center px-1 sm:px-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
                     active
                       ? 'text-[#0b6b4f] dark:text-[#4fd1a1] font-semibold'
                       : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
                   }`}
                 >
-                  <Icon className="w-5 h-5" />
-                  <span className="text-[11px] leading-tight mt-1 truncate max-w-full">
+                  {active && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-[#0b6b4f] dark:bg-[#4fd1a1]"
+                    />
+                  )}
+                  <Icon className="w-5 h-5 shrink-0" />
+                  <span className="text-[10.5px] sm:text-[11px] leading-tight mt-1 truncate max-w-full whitespace-nowrap">
                     {item.shortLabel || item.label}
                   </span>
                 </Link>
               );
             })}
+
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="More navigation links"
+              aria-expanded={mobileMenuOpen}
+              aria-controls="mobile-navigation-menu"
+              className={`relative min-h-[44px] h-full flex flex-col items-center justify-center px-1 sm:px-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                mobileMenuOpen || isOverflowRouteActive
+                  ? 'text-[#0b6b4f] dark:text-[#4fd1a1] font-semibold'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              {(mobileMenuOpen || isOverflowRouteActive) && (
+                <span
+                  aria-hidden="true"
+                  className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-[#0b6b4f] dark:bg-[#4fd1a1]"
+                />
+              )}
+              <MoreHorizontal className="w-5 h-5 shrink-0" />
+              <span className="text-[10.5px] sm:text-[11px] leading-tight mt-1 truncate max-w-full whitespace-nowrap">
+                More
+              </span>
+            </button>
           </div>
         </nav>
       )}
+
+      {/* Full Mobile Navigation Drawer Sheet */}
+      <BottomSheet
+        open={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        title={profile?.name || 'EMS Menu'}
+        subtitle={[roleLabel, profile?.designation].filter(Boolean).join(' · ')}
+        maxWidthClass="sm:max-w-lg"
+        footer={
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="flex-1 min-h-[44px] px-3.5 py-2.5 rounded-[14px] border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/80 inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+            >
+              {isDark ? <Sun className="w-4 h-4 shrink-0" /> : <Moon className="w-4 h-4 shrink-0" />}
+              <span>{isDark ? 'Light mode' : 'Dark mode'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex-1 min-h-[44px] px-3.5 py-2.5 rounded-[14px] border border-rose-200 dark:border-rose-900/60 bg-rose-50/70 dark:bg-rose-950/30 text-sm font-semibold text-rose-700 dark:text-rose-300 hover:bg-rose-100/80 dark:hover:bg-rose-950/50 inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              <span>Sign Out</span>
+            </button>
+          </div>
+        }
+      >
+        <div id="mobile-navigation-menu" className="space-y-4">
+          {(userOffice || hasMultipleOffices) && (
+            <div className="rounded-[18px] border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/50 px-4 py-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {hasMultipleOffices ? `${chargeBadgeLabel} · ${assignedOffices.length}টি অফিস` : 'Assigned office'}
+                </div>
+                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate mt-0.5">
+                  {userOffice?.name || 'অফিস নির্বাচন করুন'}
+                </div>
+              </div>
+              {hasMultipleOffices && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    navigate('/select-office');
+                  }}
+                  className="min-h-[44px] px-3.5 rounded-[14px] bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-xs font-semibold text-[#0b6b4f] dark:text-[#4fd1a1] hover:bg-[#0b6b4f]/15 dark:hover:bg-[#4fd1a1]/25 inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap transition-colors"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
+                  <span>পরিবর্তন</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {overflowNavItems.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                More links
+              </div>
+              <nav aria-label="More mobile pages" className="space-y-1.5">
+                {overflowNavItems.map((item) => {
+                  const active = location.pathname === item.to;
+                  const Icon = item.Icon;
+                  return (
+                    <Link
+                      key={item.to}
+                      to={item.to}
+                      onClick={() => setMobileMenuOpen(false)}
+                      aria-current={active ? 'page' : undefined}
+                      className={`min-h-[48px] px-3.5 py-2.5 rounded-[14px] flex items-center justify-between gap-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                        active
+                          ? 'bg-[#0b6b4f]/10 text-[#0b6b4f] dark:bg-[#4fd1a1]/15 dark:text-[#4fd1a1] font-semibold'
+                          : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/80'
+                      }`}
+                    >
+                      <span className="flex items-center gap-3 min-w-0">
+                        <Icon className="w-5 h-5 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      <ChevronRight className="w-4 h-4 shrink-0 opacity-60" aria-hidden="true" />
+                    </Link>
+                  );
+                })}
+              </nav>
+            </div>
+          )}
+
+          {mobilePrimaryItems.length > 0 && (
+            <div className="space-y-1.5">
+              {overflowNavItems.length > 0 && (
+                <div className="px-1 pt-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Quick navigation
+                </div>
+              )}
+              <nav aria-label="Primary mobile pages" className="space-y-1.5">
+                {mobilePrimaryItems.map((item) => {
+                  const active = location.pathname === item.to;
+                  const Icon = item.Icon;
+                  return (
+                    <Link
+                      key={item.to}
+                      to={item.to}
+                      onClick={() => setMobileMenuOpen(false)}
+                      aria-current={active ? 'page' : undefined}
+                      className={`min-h-[48px] px-3.5 py-2.5 rounded-[14px] flex items-center justify-between gap-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                        active
+                          ? 'bg-[#0b6b4f]/10 text-[#0b6b4f] dark:bg-[#4fd1a1]/15 dark:text-[#4fd1a1] font-semibold'
+                          : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/80'
+                      }`}
+                    >
+                      <span className="flex items-center gap-3 min-w-0">
+                        <Icon className="w-5 h-5 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      <ChevronRight className="w-4 h-4 shrink-0 opacity-60" aria-hidden="true" />
+                    </Link>
+                  );
+                })}
+              </nav>
+            </div>
+          )}
+        </div>
+      </BottomSheet>
 
       {/* Unauthorized Route Redirect Toast */}
       {unauthorizedToast && (

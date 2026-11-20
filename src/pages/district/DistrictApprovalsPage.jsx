@@ -8,11 +8,13 @@ import { db, OperationType, handleFirestoreError } from '../../firebase/config.j
 import { getApproverHint, getRoleLabel } from '../../lib/permissions.js';
 
 export default function DistrictApprovalsPage() {
-  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, canReview } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, canReview, permissionScope } = useAuth();
   const { logAudit } = useData();
 
   const canLeaveReview = can('leave.review');
   const canFieldReview = can('fieldduty.review');
+  const canViewUsers = can('user.view');
+  const canViewAttendance = can('attendance.view');
 
   const [tab, setTab] = useState(() => (canLeaveReview ? 'leaves' : 'field'));
   const [loading, setLoading] = useState(true);
@@ -41,13 +43,37 @@ export default function DistrictApprovalsPage() {
     setLoading(true);
     setErrorMsg('');
     try {
+      const emptySnap = { docs: [] };
+      const isWideScope = (perm) => {
+        const s = permissionScope(perm);
+        return s === 'subtree' || s === 'all';
+      };
+
+      const canQueryLeaves = canLeaveReview || canViewAttendance;
+      const canQueryLeavesSubtree = isWideScope('leave.review') || isWideScope('attendance.view');
+      const canQueryField = canFieldReview || canViewAttendance;
+      const canQueryFieldSubtree = isWideScope('fieldduty.review') || isWideScope('attendance.view');
+      const canQueryUsersSubtree = isWideScope('user.view');
+
       const [l1, l2, f1, f2, u1, u2] = await Promise.all([
-        getDocs(query(collection(db, 'leaves'), where('districtOfficeId', '==', myOfficeId))),
-        getDocs(query(collection(db, 'leaves'), where('officeId', '==', myOfficeId))),
-        getDocs(query(collection(db, 'fieldDuties'), where('districtOfficeId', '==', myOfficeId))),
-        getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId))),
-        getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId))),
-        getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId)))
+        canQueryLeaves && canQueryLeavesSubtree
+          ? getDocs(query(collection(db, 'leaves'), where('districtOfficeId', '==', myOfficeId)))
+          : Promise.resolve(emptySnap),
+        canQueryLeaves
+          ? getDocs(query(collection(db, 'leaves'), where('officeId', '==', myOfficeId)))
+          : Promise.resolve(emptySnap),
+        canQueryField && canQueryFieldSubtree
+          ? getDocs(query(collection(db, 'fieldDuties'), where('districtOfficeId', '==', myOfficeId)))
+          : Promise.resolve(emptySnap),
+        canQueryField
+          ? getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId)))
+          : Promise.resolve(emptySnap),
+        canViewUsers && canQueryUsersSubtree
+          ? getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId)))
+          : Promise.resolve(emptySnap),
+        canViewUsers
+          ? getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId)))
+          : Promise.resolve(emptySnap)
       ]);
 
       const merge = (a, b) => {
@@ -74,7 +100,7 @@ export default function DistrictApprovalsPage() {
     } finally {
       setLoading(false);
     }
-  }, [myOfficeId]);
+  }, [myOfficeId, canLeaveReview, canFieldReview, canViewUsers, canViewAttendance, permissionScope]);
 
   useEffect(() => {
     loadRequests();

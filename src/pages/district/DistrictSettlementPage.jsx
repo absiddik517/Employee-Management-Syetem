@@ -19,7 +19,7 @@ import { db, OperationType, handleFirestoreError } from '../../firebase/config.j
 import { getTodayDhaka, formatDhakaTime, isWeekendDhaka } from '../../utils/dhakaTime.js';
 
 export default function DistrictSettlementPage() {
-  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, canReview } = useAuth();
+  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, canReview, permissionScope } = useAuth();
   const { resolveStorageUrl, deleteStoragePathSafe, logAudit } = useData();
 
   const [loading, setLoading] = useState(true);
@@ -99,15 +99,34 @@ export default function DistrictSettlementPage() {
     setErrorMsg('');
     setSelectedIds([]);
     try {
+      const emptySnap = { docs: [] };
+      const isWideScope = (perm) => {
+        const s = permissionScope(perm);
+        return s === 'subtree' || s === 'all';
+      };
+
+      const canUserSubtree = isWideScope('user.view');
+      const canAttSubtree = isWideScope('attendance.view');
+      const canLeaveSubtree = isWideScope('leave.review') || canAttSubtree;
+      const canFieldSubtree = isWideScope('fieldduty.review') || canAttSubtree;
+
       const [uDist, uOwn, aDist, aOwn, hSnap, lDist, lOwn, fDist, fOwn] = await Promise.all([
-        getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId))),
+        canUserSubtree
+          ? getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId)))
+          : Promise.resolve(emptySnap),
         getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId))),
-        getDocs(query(collection(db, 'attendance'), where('districtOfficeId', '==', myOfficeId), where('date', '==', dateOverride))),
+        canAttSubtree
+          ? getDocs(query(collection(db, 'attendance'), where('districtOfficeId', '==', myOfficeId), where('date', '==', dateOverride)))
+          : Promise.resolve(emptySnap),
         getDocs(query(collection(db, 'attendance'), where('officeId', '==', myOfficeId), where('date', '==', dateOverride))),
         getDocs(query(collection(db, 'holidays'), where('type', 'in', ['government', 'national', 'optional']))),
-        getDocs(query(collection(db, 'leaves'), where('districtOfficeId', '==', myOfficeId), where('status', '==', 'approved'))),
+        canLeaveSubtree
+          ? getDocs(query(collection(db, 'leaves'), where('districtOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
+          : Promise.resolve(emptySnap),
         getDocs(query(collection(db, 'leaves'), where('officeId', '==', myOfficeId), where('status', '==', 'approved'))),
-        getDocs(query(collection(db, 'fieldDuties'), where('districtOfficeId', '==', myOfficeId), where('status', '==', 'approved'))),
+        canFieldSubtree
+          ? getDocs(query(collection(db, 'fieldDuties'), where('districtOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
+          : Promise.resolve(emptySnap),
         getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId), where('status', '==', 'approved')))
       ]);
 
@@ -131,7 +150,7 @@ export default function DistrictSettlementPage() {
     } finally {
       setLoading(false);
     }
-  }, [myOfficeId, filters.date]);
+  }, [myOfficeId, filters.date, permissionScope]);
 
   useEffect(() => {
     loadData(filters.date);
