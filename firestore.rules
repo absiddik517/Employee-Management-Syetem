@@ -645,7 +645,7 @@ service cloud.firestore {
             hasPerm('attendance.checkin')
             && isOwner(incoming().uid)
             && incoming().checkIn != null
-            && incoming().checkIn.time == request.time
+            && 'boundDeviceId' in callerData()
             && callerData().boundDeviceId is string
             && incoming().checkIn.deviceId == callerData().boundDeviceId
             && (!('checkOut' in incoming()) || incoming().checkOut == null)
@@ -681,7 +681,7 @@ service cloud.firestore {
             && existing().checkIn != null
             && (!('checkOut' in existing()) || existing().checkOut == null)
             && incoming().checkOut != null
-            && incoming().checkOut.time == request.time
+            && 'boundDeviceId' in callerData()
             && callerData().boundDeviceId is string
             && incoming().checkOut.deviceId == callerData().boundDeviceId
             && incoming().diff(existing()).affectedKeys().hasOnly(['checkOut', 'updatedAt'])

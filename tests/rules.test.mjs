@@ -761,3 +761,80 @@ test('Owner device binding tolerates legacy user fields, allows idempotent retry
   );
 });
 
+test('Employee attendance check-in (create) and check-out (update) enforce device binding, role, and top-level server timestamps', async () => {
+  const empDb = testEnv.authenticatedContext('emp1').firestore();
+  const saDb = testEnv.authenticatedContext('sa1').firestore();
+
+  const validPunch = (deviceId = 'dev-12345') => ({
+    time: tsNow(),
+    lat: 23.85,
+    lng: 90.26,
+    accuracy: 12,
+    distanceMeters: 4,
+    deviceId,
+    photoPath: 'attendance/emp1/2026-11-20_in.jpg',
+    photoDeleted: false
+  });
+
+  const validPayload = {
+    uid: 'emp1',
+    employeeName: 'Test emp1',
+    designation: 'employee',
+    officeId: 'upz1',
+    districtOfficeId: 'dist1',
+    date: '2026-11-20',
+    isFieldDuty: false,
+    checkIn: validPunch(),
+    checkOut: null,
+    initialStatus: 'সময়মতো',
+    finalStatus: null,
+    settled: false,
+    settledBy: null,
+    settledByName: null,
+    settledAt: null,
+    districtComment: null,
+    photoDeleted: false,
+    photoDeletedAt: null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+
+  // Wrong deviceId denied
+  await assertFails(
+    setDoc(doc(empDb, 'attendance', 'emp1_2026-11-20'), {
+      ...validPayload,
+      checkIn: validPunch('wrong-device')
+    })
+  );
+
+  // Creating for another user denied
+  await assertFails(
+    setDoc(doc(empDb, 'attendance', 'emp2_2026-11-20'), {
+      ...validPayload,
+      uid: 'emp2'
+    })
+  );
+
+  // Super Admin denied self check-in
+  await assertFails(
+    setDoc(doc(saDb, 'attendance', 'sa1_2026-11-20'), {
+      ...validPayload,
+      uid: 'sa1',
+      officeId: 'head',
+      districtOfficeId: ''
+    })
+  );
+
+  // Valid employee self check-in succeeds
+  await assertSucceeds(setDoc(doc(empDb, 'attendance', 'emp1_2026-11-20'), validPayload));
+
+  // Valid employee same-day check-out succeeds
+  await assertSucceeds(
+    updateDoc(doc(empDb, 'attendance', 'emp1_2026-11-20'), {
+      checkOut: validPunch(),
+      updatedAt: serverTimestamp()
+    })
+  );
+});
+
+

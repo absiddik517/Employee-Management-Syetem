@@ -8,7 +8,8 @@ import {
   query,
   where,
   getDocs,
-  serverTimestamp
+  serverTimestamp,
+  Timestamp
 } from 'firebase/firestore';
 import AppShell from '../../components/AppShell.jsx';
 import StatusText from '../../components/StatusText.jsx';
@@ -26,7 +27,14 @@ import {
 import { getHighAccuracyPosition, haversineDistanceMeters } from '../../utils/geo.js';
 
 export default function EmployeeHomePage() {
-  const { profile, userOffice: office, deviceMismatch, localDeviceId, computeDistrictOfficeId } = useAuth();
+  const {
+    profile,
+    userOffice: office,
+    deviceMismatch,
+    localDeviceId,
+    computeDistrictOfficeId,
+    loadUserProfile
+  } = useAuth();
 
   const [loadingToday, setLoadingToday] = useState(true);
   const [todayRecord, setTodayRecord] = useState(null);
@@ -43,6 +51,52 @@ export default function EmployeeHomePage() {
   const todayStr = useMemo(() => getTodayDhaka(), []);
   const todayDisplay = useMemo(() => formatDisplayDate(todayStr), [todayStr]);
   const isTodayFieldDuty = !!activeFieldDuty;
+
+  const verifyLiveUserAndDevice = useCallback(async () => {
+    if (!profile?.uid) {
+      return { ok: false, message: 'ব্যবহারকারীর প্রোফাইল পাওয়া যায়নি। পুনরায় লগইন করুন।' };
+    }
+    const userRef = doc(db, 'users', profile.uid);
+    let userSnap;
+    try {
+      userSnap = await getDoc(userRef);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `users/${profile.uid}`);
+      return { ok: false, message: 'ব্যবহারকারীর তথ্য যাচাই করা যায়নি।' };
+    }
+
+    if (!userSnap.exists()) {
+      await loadUserProfile(profile.uid);
+      return { ok: false, message: 'আপনার প্রোফাইল পাওয়া যায়নি। সুপার অ্যাডমিনের সাথে যোগাযোগ করুন।' };
+    }
+
+    const userData = userSnap.data();
+    if (userData.approvalStatus !== 'approved' || userData.status !== 'active') {
+      await loadUserProfile(profile.uid);
+      return { ok: false, message: 'আপনার অ্যাকাউন্টটি সক্রিয় বা অনুমোদিত নয়।' };
+    }
+
+    if (!userData.boundDeviceId) {
+      try {
+        await updateDoc(userRef, {
+          boundDeviceId: localDeviceId,
+          updatedAt: serverTimestamp()
+        });
+        await loadUserProfile(profile.uid);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${profile.uid}`);
+        return { ok: false, message: 'ডিভাইস নিবন্ধন করা যায়নি।' };
+      }
+    } else if (userData.boundDeviceId !== localDeviceId) {
+      await loadUserProfile(profile.uid);
+      return {
+        ok: false,
+        message: 'এই ডিভাইসটি অনুমোদিত নয়। সুপার অ্যাডমিন বা দায়িত্বপ্রাপ্ত কর্মকর্তাকে ডিভাইস রিসেট করতে বলুন।'
+      };
+    }
+
+    return { ok: true, userData };
+  }, [profile?.uid, localDeviceId, loadUserProfile]);
 
   const loadTodayData = useCallback(async () => {
     if (!profile) return;
@@ -100,9 +154,26 @@ export default function EmployeeHomePage() {
       return;
     }
 
+    const officeLat = Number(office.lat);
+    const officeLng = Number(office.lng);
+    if (!Number.isFinite(officeLat) || !Number.isFinite(officeLng)) {
+      setActionError('আপনার অফিসের GPS স্থানাঙ্ক সঠিক নয়। সুপার অ্যাডমিনকে অফিসের লোকেশন আপডেট করতে বলুন।');
+      return;
+    }
+
     setGpsChecking(true);
     try {
+      const liveCheck = await verifyLiveUserAndDevice();
+      if (!liveCheck.ok) {
+        setActionError(liveCheck.message);
+        return;
+      }
+
       const pos = await getHighAccuracyPosition();
+      if (!Number.isFinite(pos.lat) || !Number.isFinite(pos.lng) || !Number.isFinite(pos.accuracy) || pos.accuracy < 0) {
+        setActionError('GPS স্থানাঙ্ক সঠিক পাওয়া যায়নি। অনুগ্রহ করে পুনরায় চেষ্টা করুন।');
+        return;
+      }
       if (pos.accuracy > 50) {
         setActionError(
           `GPS নির্ভুলতা ৫০ মিটারের বেশি (±${toBanglaDigits(pos.accuracy)} মিটার)। অনুগ্রহ করে খোলা জায়গায় পুনরায় চেষ্টা করুন।`
@@ -110,7 +181,11 @@ export default function EmployeeHomePage() {
         return;
       }
 
-      const distance = haversineDistanceMeters(pos.lat, pos.lng, office.lat, office.lng);
+      const distance = haversineDistanceMeters(pos.lat, pos.lng, officeLat, officeLng);
+      if (!Number.isFinite(distance) || distance < 0) {
+        setActionError('অফিস থেকে দূরত্ব নির্ণয় করা যায়নি। পুনরায় চেষ্টা করুন।');
+        return;
+      }
       const radius = Number(office.geofenceRadiusMeters || 100);
       setLastDistanceBangla(
         `অফিস থেকে দূরত্ব: ${toBanglaDigits(distance)} মিটার (নির্ভুলতা ±${toBanglaDigits(pos.accuracy)} মিটার)`
@@ -154,12 +229,18 @@ export default function EmployeeHomePage() {
     const targetPath = `attendance/${uid}/${todayStr}_${punchType}.jpg`;
 
     try {
+      const liveCheck = await verifyLiveUserAndDevice();
+      if (!liveCheck.ok) {
+        setActionError(liveCheck.message);
+        return;
+      }
+
       const uploadRes = await uploadImageSafe(targetPath, blob, 'image/jpeg');
       const photoPath = uploadRes.ok ? targetPath : 'storage-unavailable/no-bucket';
       const photoUnavailable = !uploadRes.ok;
 
       const punchObj = {
-        time: serverTimestamp(),
+        time: Timestamp.now(),
         lat: verifiedGps.lat,
         lng: verifiedGps.lng,
         accuracy: verifiedGps.accuracy,
@@ -170,13 +251,24 @@ export default function EmployeeHomePage() {
       };
 
       if (punchType === 'in') {
+        const existingSnap = await getDoc(doc(db, 'attendance', docId)).catch(() => null);
+        if (existingSnap && existingSnap.exists()) {
+          await loadTodayData();
+          setActionError('আজকের হাজিরা রেকর্ড ইতোমধ্যে বিদ্যমান রয়েছে। পৃষ্ঠাটি রিফ্রেশ করে দেখুন।');
+          return;
+        }
+
         const initialStatus = computeInitialStatus(new Date(), office.startTime, office.graceMinutes);
+        const employeeName = String(profile.name || profile.email || 'User').trim().slice(0, 120) || 'User';
+        const designation = String(profile.designation || '').trim().slice(0, 120);
+        const districtOfficeId = String(profile.districtOfficeId || computeDistrictOfficeId(office.id) || '').slice(0, 128);
+
         const payload = {
           uid,
-          employeeName: profile.name,
-          designation: profile.designation || '',
+          employeeName,
+          designation,
           officeId: office.id,
-          districtOfficeId: profile.districtOfficeId || computeDistrictOfficeId(office.id),
+          districtOfficeId,
           date: todayStr,
           isFieldDuty: isTodayFieldDuty,
           checkIn: punchObj,
