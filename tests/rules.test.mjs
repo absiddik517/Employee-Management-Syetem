@@ -700,3 +700,64 @@ test('Live permission overrides in settings/permissions immediately govern Fires
   await assertSucceeds(getBytes(ref(hoStorage, 'attendance/emp1/in.jpg')));
   await assertFails(getBytes(ref(unfeoStorage, 'attendance/emp1/in.jpg')));
 });
+
+test('Owner device binding tolerates legacy user fields, allows idempotent retry, and blocks device hijack or role tampering', async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, 'users', 'ad_unbound'), {
+      uid: 'ad_unbound',
+      name: 'AD Legacy',
+      designation: 'Assistant Director',
+      address: 'Mymensingh',
+      mobile: '01711111111',
+      email: 'admymen@gmail.com',
+      officeId: 'dist1',
+      districtOfficeId: 'dist1',
+      joiningDate: '',
+      resignationDate: '',
+      legacyExtraField: 'preserved',
+      status: 'active',
+      role: 'assistant_director',
+      approvalStatus: 'approved',
+      boundDeviceId: null,
+      createdAt: null,
+      updatedAt: tsNow()
+    });
+  });
+
+  const adDb = testEnv.authenticatedContext('ad_unbound').firestore();
+
+  // First-time binding succeeds despite legacy/empty fields on existing doc
+  await assertSucceeds(
+    updateDoc(doc(adDb, 'users', 'ad_unbound'), {
+      boundDeviceId: 'dev_abc12345',
+      updatedAt: serverTimestamp()
+    })
+  );
+
+  // Idempotent retry with identical boundDeviceId succeeds
+  await assertSucceeds(
+    updateDoc(doc(adDb, 'users', 'ad_unbound'), {
+      boundDeviceId: 'dev_abc12345',
+      updatedAt: serverTimestamp()
+    })
+  );
+
+  // Changing to a different boundDeviceId without admin reset is denied
+  await assertFails(
+    updateDoc(doc(adDb, 'users', 'ad_unbound'), {
+      boundDeviceId: 'dev_other999',
+      updatedAt: serverTimestamp()
+    })
+  );
+
+  // Tampering with role during device binding is denied
+  await assertFails(
+    updateDoc(doc(adDb, 'users', 'ad_unbound'), {
+      boundDeviceId: 'dev_abc12345',
+      role: 'super_admin',
+      updatedAt: serverTimestamp()
+    })
+  );
+});
+

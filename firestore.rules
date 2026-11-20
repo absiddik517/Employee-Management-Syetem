@@ -304,15 +304,15 @@ service cloud.firestore {
         && (!('officeId' in data) || isOptString(data.officeId, 128))
         && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
         && isOptAdditionalOfficeIds(data)
-        && (!('joiningDate' in data) || data.joiningDate == null || data.joiningDate is timestamp || isValidDateStr(data.joiningDate))
+        && (!('joiningDate' in data) || data.joiningDate == null || data.joiningDate == '' || data.joiningDate is timestamp || isValidDateStr(data.joiningDate))
         && data.status in ['active', 'resigned']
-        && (!('resignationDate' in data) || data.resignationDate == null || data.resignationDate is timestamp || isValidDateStr(data.resignationDate))
+        && (!('resignationDate' in data) || data.resignationDate == null || data.resignationDate == '' || data.resignationDate is timestamp || isValidDateStr(data.resignationDate))
         && (!('profilePhotoPath' in data) || isOptString(data.profilePhotoPath, 300))
         // MIGRATION_COMPAT: accept legacy role strings until migration script completes
         && data.role in ['employee', 'unfeo', 'assistant_director', 'head_office_officer', 'director_general', 'super_admin', 'office_head', 'district_officer', 'head_office']
         && data.approvalStatus in ['pending', 'approved', 'rejected']
         && (!('boundDeviceId' in data) || isOptString(data.boundDeviceId, 128))
-        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && (!('createdAt' in data) || data.createdAt == null || data.createdAt is timestamp)
         && data.updatedAt is timestamp;
     }
 
@@ -546,53 +546,66 @@ service cloud.firestore {
 
       allow update: if isValidId(userId)
         && isSignedIn()
-        && isValidUser(incoming())
-        && (!('uid' in existing()) || incoming().uid == existing().uid)
-        && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
         && incoming().updatedAt == request.time
         && (
-          // Super Admin (all scope) — blocked from demoting own super_admin role
+          // Owner first-time device binding (or idempotent retry with identical deviceId)
           (
-            permScope('user.edit') == 'all'
-            && !(isOwner(userId) && normalizeRole(existing().role) == 'super_admin' && normalizeRole(incoming().role) != 'super_admin')
-          )
-          // Owner first-time device binding
-          || (
             isOwner(userId)
             && isApprovedActiveUser()
-            && (!('boundDeviceId' in existing()) || existing().boundDeviceId == null || existing().boundDeviceId == '')
-            && incoming().boundDeviceId is string && incoming().boundDeviceId.size() >= 4
+            && (
+              !('boundDeviceId' in existing())
+              || existing().boundDeviceId == null
+              || existing().boundDeviceId == ''
+              || existing().boundDeviceId == incoming().boundDeviceId
+            )
+            && incoming().boundDeviceId is string
+            && incoming().boundDeviceId.size() >= 4
+            && incoming().boundDeviceId.size() <= 128
             && incoming().diff(existing()).affectedKeys().hasOnly(['boundDeviceId', 'updatedAt'])
           )
           // Owner profile photo update
           || (
             isOwner(userId)
+            && (!('profilePhotoPath' in incoming()) || isOptString(incoming().profilePhotoPath, 300))
             && incoming().diff(existing()).affectedKeys().hasOnly(['profilePhotoPath', 'updatedAt'])
           )
-          // Assistant Director (subtree scope): edit lower-rank user profile, approve, reset device, assign strictly lower role
+          // Scoped admin/manager updates validate full user schema & immutable identity fields
           || (
-            hasPerm('user.edit')
-            && permScope('user.edit') == 'subtree'
-            && userId != request.auth.uid
-            && matchesDocScope('user.edit', userId, docOfficeId(existing()), docDistrictOfficeId(existing()))
-            && matchesDocScope('user.edit', userId, docOfficeId(incoming()), docDistrictOfficeId(incoming()))
-            && rankOf(callerRole()) > rankOf(existing().role)
+            isValidUser(incoming())
+            && (!('uid' in existing()) || incoming().uid == existing().uid)
+            && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
             && (
-              normalizeRole(incoming().role) == normalizeRole(existing().role)
-              || (hasPerm('user.role.assign') && rankOf(callerRole()) > rankOf(incoming().role))
+              // Super Admin (all scope) — blocked from demoting own super_admin role
+              (
+                permScope('user.edit') == 'all'
+                && !(isOwner(userId) && normalizeRole(existing().role) == 'super_admin' && normalizeRole(incoming().role) != 'super_admin')
+              )
+              // Assistant Director (subtree scope): edit lower-rank user profile, approve, reset device, assign strictly lower role
+              || (
+                hasPerm('user.edit')
+                && permScope('user.edit') == 'subtree'
+                && userId != request.auth.uid
+                && matchesDocScope('user.edit', userId, docOfficeId(existing()), docDistrictOfficeId(existing()))
+                && matchesDocScope('user.edit', userId, docOfficeId(incoming()), docDistrictOfficeId(incoming()))
+                && rankOf(callerRole()) > rankOf(existing().role)
+                && (
+                  normalizeRole(incoming().role) == normalizeRole(existing().role)
+                  || (hasPerm('user.role.assign') && rankOf(callerRole()) > rankOf(incoming().role))
+                )
+                && (!('boundDeviceId' in incoming().diff(existing()).affectedKeys()) || incoming().boundDeviceId == null)
+                && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'boundDeviceId', 'name', 'designation', 'mobile', 'address', 'officeId', 'districtOfficeId', 'joiningDate', 'role', 'status', 'resignationDate', 'updatedAt'])
+              )
+              // UNFEO (office scope): approve or reset device for lower-rank staff (employee) in own office(s)
+              || (
+                hasPerm('user.approve')
+                && permScope('user.approve') == 'office'
+                && userId != request.auth.uid
+                && matchesDocScope('user.approve', userId, docOfficeId(existing()), docDistrictOfficeId(existing()))
+                && rankOf(callerRole()) > rankOf(existing().role)
+                && (!('boundDeviceId' in incoming().diff(existing()).affectedKeys()) || incoming().boundDeviceId == null)
+                && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'boundDeviceId', 'updatedAt'])
+              )
             )
-            && (!('boundDeviceId' in incoming().diff(existing()).affectedKeys()) || incoming().boundDeviceId == null)
-            && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'boundDeviceId', 'name', 'designation', 'mobile', 'address', 'officeId', 'districtOfficeId', 'joiningDate', 'role', 'status', 'resignationDate', 'updatedAt'])
-          )
-          // UNFEO (office scope): approve or reset device for lower-rank staff (employee) in own office(s)
-          || (
-            hasPerm('user.approve')
-            && permScope('user.approve') == 'office'
-            && userId != request.auth.uid
-            && matchesDocScope('user.approve', userId, docOfficeId(existing()), docDistrictOfficeId(existing()))
-            && rankOf(callerRole()) > rankOf(existing().role)
-            && (!('boundDeviceId' in incoming().diff(existing()).affectedKeys()) || incoming().boundDeviceId == null)
-            && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'boundDeviceId', 'updatedAt'])
           )
         );
 

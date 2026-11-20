@@ -96,6 +96,7 @@ export function AuthProvider({ children }) {
 
   const officesRef = useRef([]);
   officesRef.current = offices;
+  const authFlowInProgressRef = useRef(false);
 
   const isAuthenticated = !!firebaseUser && !!profile;
   const isApproved = profile?.approvalStatus === 'approved' && profile?.status === 'active';
@@ -392,7 +393,9 @@ export function AuthProvider({ children }) {
         if (!active) return;
         if (user) {
           setFirebaseUser(user);
-          await loadUserProfile(user.uid, { officeListOverride: officeList });
+          if (!authFlowInProgressRef.current) {
+            await loadUserProfile(user.uid, { officeListOverride: officeList });
+          }
         } else {
           setFirebaseUser(null);
           setProfile(null);
@@ -452,6 +455,7 @@ export function AuthProvider({ children }) {
     async (email, password) => {
       setError('');
       setLoading(true);
+      authFlowInProgressRef.current = true;
       try {
         const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
         setFirebaseUser(cred.user);
@@ -488,6 +492,7 @@ export function AuthProvider({ children }) {
         }
         throw err;
       } finally {
+        authFlowInProgressRef.current = false;
         setLoading(false);
       }
     },
@@ -535,6 +540,7 @@ export function AuthProvider({ children }) {
     async (form, photoFile, onTaskUpdate) => {
       setError('');
       setLoading(true);
+      authFlowInProgressRef.current = true;
       const emit = (id, status, detail = '') => {
         if (typeof onTaskUpdate === 'function') onTaskUpdate(id, status, detail);
       };
@@ -638,6 +644,7 @@ export function AuthProvider({ children }) {
         }
         throw err;
       } finally {
+        authFlowInProgressRef.current = false;
         setLoading(false);
       }
     },
@@ -657,6 +664,7 @@ export function AuthProvider({ children }) {
       }
 
       setLoading(true);
+      authFlowInProgressRef.current = true;
       try {
         emit('settings', 'running', 'Checking permissions & registration settings...');
         await withTimeout(fetchPublicBootstrap(), 12000, 'Could not load office & registration settings.');
@@ -739,6 +747,7 @@ export function AuthProvider({ children }) {
         setError(err.message || 'প্রোফাইল তৈরি করা যায়নি।');
         throw err;
       } finally {
+        authFlowInProgressRef.current = false;
         setLoading(false);
       }
     },
