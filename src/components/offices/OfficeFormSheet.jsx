@@ -21,6 +21,8 @@ export default function OfficeFormSheet({
   mode = 'create', // 'create' | 'edit'
   office = null,
   offices = [],
+  childOnly = false,
+  allowedParentOffices = [],
   submitting = false,
   onClose,
   onSubmit
@@ -43,7 +45,7 @@ export default function OfficeFormSheet({
       setForm({
         name: office.name || '',
         address: office.address || '',
-        level: office.level || 'upazila',
+        level: childOnly ? 'upazila' : office.level || 'upazila',
         parentOfficeId: office.level === 'head' ? '' : office.parentOfficeId || '',
         lat: office.lat ?? 23.8103,
         lng: office.lng ?? 90.4125,
@@ -53,15 +55,19 @@ export default function OfficeFormSheet({
         endTime: office.endTime || '17:00'
       });
     } else {
-      setForm({ ...INITIAL_OFFICE_FORM });
+      setForm({
+        ...INITIAL_OFFICE_FORM,
+        level: 'upazila',
+        parentOfficeId: childOnly ? allowedParentOffices[0]?.id || '' : ''
+      });
     }
-  }, [open, mode, office]);
+  }, [open, mode, office, childOnly, allowedParentOffices]);
 
   const excludeId = mode === 'edit' && office ? office.id : null;
-  const parentOptions = useMemo(
-    () => getEligibleParentOffices(offices, form.level, excludeId),
-    [offices, form.level, excludeId]
-  );
+  const parentOptions = useMemo(() => {
+    if (childOnly) return allowedParentOffices;
+    return getEligibleParentOffices(offices, form.level, excludeId);
+  }, [childOnly, allowedParentOffices, offices, form.level, excludeId]);
 
   const clearError = (field) => {
     if (errors[field]) {
@@ -74,6 +80,7 @@ export default function OfficeFormSheet({
   };
 
   const handleLevelChange = (nextLevel) => {
+    if (childOnly) return;
     clearError('level');
     clearError('parentOfficeId');
     const nextEligible = getEligibleParentOffices(offices, nextLevel, excludeId);
@@ -154,6 +161,15 @@ export default function OfficeFormSheet({
     if (form.graceMinutes === '' || Number.isNaN(graceNum) || graceNum < 0 || graceNum > 180) {
       nextErrors.graceMinutes = 'Enter 0 to 180 minutes.';
     }
+    if (childOnly) {
+      if (form.level !== 'upazila') {
+        nextErrors.level = 'শুধুমাত্র উপজেলা অফিস যুক্ত বা হালনাগাদ করা যাবে।';
+      }
+      if (!form.parentOfficeId) {
+        nextErrors.parentOfficeId = 'মূল জেলা অফিস নির্বাচন করুন।';
+      }
+    }
+
     if (!form.startTime) {
       nextErrors.startTime = 'Select a start time.';
     }
@@ -217,10 +233,20 @@ export default function OfficeFormSheet({
     <BottomSheet
       open={open}
       onClose={submitting ? undefined : onClose}
-      title={isEdit ? 'Edit office' : 'Add office'}
+      title={
+        childOnly
+          ? isEdit
+            ? 'উপজেলা অফিস সম্পাদনা'
+            : 'নতুন উপজেলা অফিস'
+          : isEdit
+          ? 'Edit office'
+          : 'Add office'
+      }
       subtitle={
         isEdit
           ? 'Changes appear in the office details right away.'
+          : childOnly
+          ? 'আপনার জেলা অফিসের অধীন একটি উপজেলা অফিস নিবন্ধন করুন।'
           : 'Register an office with its geofence and working hours.'
       }
       maxWidthClass="sm:max-w-xl"
@@ -268,6 +294,7 @@ export default function OfficeFormSheet({
               <select
                 id="office-level"
                 value={form.level}
+                disabled={childOnly}
                 onChange={(e) => handleLevelChange(e.target.value)}
                 className={INPUT_CLASS}
               >
@@ -277,27 +304,36 @@ export default function OfficeFormSheet({
                   </option>
                 ))}
               </select>
+              {errors.level && <p className={ERROR_CLASS}>{errors.level}</p>}
             </div>
 
             <div>
-              <label htmlFor="office-parent" className={LABEL_CLASS}>Parent office</label>
+              <label htmlFor="office-parent" className={LABEL_CLASS}>
+                {childOnly ? 'Parent district office' : 'Parent office'}
+              </label>
               <select
                 id="office-parent"
                 value={form.level === 'head' ? '' : form.parentOfficeId}
-                disabled={form.level === 'head'}
+                disabled={form.level === 'head' || (childOnly && isEdit)}
+                aria-invalid={errors.parentOfficeId ? 'true' : 'false'}
                 onChange={(e) => {
                   clearError('parentOfficeId');
                   setForm((f) => ({ ...f, parentOfficeId: e.target.value }));
                 }}
                 className={INPUT_CLASS}
               >
-                <option value="">None</option>
+                {childOnly ? (
+                  <option value="">জেলা অফিস নির্বাচন করুন...</option>
+                ) : (
+                  <option value="">None</option>
+                )}
                 {parentOptions.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} ({p.level})
                   </option>
                 ))}
               </select>
+              {errors.parentOfficeId && <p className={ERROR_CLASS}>{errors.parentOfficeId}</p>}
             </div>
           </div>
 

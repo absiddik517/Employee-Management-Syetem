@@ -5,14 +5,24 @@ import StatusText from '../../components/StatusText.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { db, OperationType, handleFirestoreError } from '../../firebase/config.js';
 import { getTodayDhaka } from '../../utils/dhakaTime.js';
-import { getApproverHint } from '../../lib/permissions.js';
+import { getWorkingOfficeId, getApproverHint } from '../../lib/permissions.js';
 
 export default function EmployeeRequestsPage() {
-  const { profile, can, computeDistrictOfficeId } = useAuth();
+  const { profile, effectiveAuthUser, offices, can, computeDistrictOfficeId } = useAuth();
   const today = getTodayDhaka();
 
   const canApplyLeave = can('leave.apply');
   const canApplyFieldDuty = can('fieldduty.apply');
+  const workingOfficeId = getWorkingOfficeId(effectiveAuthUser || profile) || profile?.officeId || '';
+  const workingOfficeName = offices.find((o) => o.id === workingOfficeId)?.name || workingOfficeId;
+  const homeOfficeId = profile?.officeId || '';
+  const homeOfficeName = offices.find((o) => o.id === homeOfficeId)?.name || homeOfficeId;
+  const isAttachedRouting = Boolean(
+    profile?.attachedOfficeId &&
+    workingOfficeId === profile.attachedOfficeId &&
+    workingOfficeId !== homeOfficeId
+  );
+  const officeName = (id) => offices.find((o) => o.id === id)?.name || id;
 
   const [activeTab, setActiveTab] = useState(() => (canApplyLeave ? 'leave' : 'field'));
   const [submitting, setSubmitting] = useState(false);
@@ -77,20 +87,24 @@ export default function EmployeeRequestsPage() {
 
   const submitLeave = async (e) => {
     e.preventDefault();
-    if (!canApplyLeave) return;
+    if (!canApplyLeave || !profile) return;
     setErrorMsg('');
     setFeedbackMsg('');
     if (leaveForm.endDate < leaveForm.startDate) {
       setErrorMsg('শেষের তারিখ শুরুর তারিখের আগে হতে পারবে না।');
       return;
     }
+    const targetOfficeId = workingOfficeId || profile.officeId || '';
+    const homeOfficeId = profile.officeId || '';
     setSubmitting(true);
     try {
       await addDoc(collection(db, 'leaves'), {
         uid: profile.uid,
         employeeName: profile.name,
-        officeId: profile.officeId,
-        districtOfficeId: profile.districtOfficeId || computeDistrictOfficeId(profile.officeId),
+        officeId: targetOfficeId,
+        districtOfficeId: computeDistrictOfficeId(targetOfficeId),
+        homeOfficeId,
+        homeDistrictOfficeId: profile.districtOfficeId || computeDistrictOfficeId(homeOfficeId),
         startDate: leaveForm.startDate,
         endDate: leaveForm.endDate,
         leaveType: leaveForm.leaveType,
@@ -115,20 +129,24 @@ export default function EmployeeRequestsPage() {
 
   const submitFieldDuty = async (e) => {
     e.preventDefault();
-    if (!canApplyFieldDuty) return;
+    if (!canApplyFieldDuty || !profile) return;
     setErrorMsg('');
     setFeedbackMsg('');
     if (fieldForm.endDate < fieldForm.startDate) {
       setErrorMsg('শেষের তারিখ শুরুর তারিখের আগে হতে পারবে না।');
       return;
     }
+    const targetOfficeId = workingOfficeId || profile.officeId || '';
+    const homeOfficeId = profile.officeId || '';
     setSubmitting(true);
     try {
       await addDoc(collection(db, 'fieldDuties'), {
         uid: profile.uid,
         employeeName: profile.name,
-        officeId: profile.officeId,
-        districtOfficeId: profile.districtOfficeId || computeDistrictOfficeId(profile.officeId),
+        officeId: targetOfficeId,
+        districtOfficeId: computeDistrictOfficeId(targetOfficeId),
+        homeOfficeId,
+        homeDistrictOfficeId: profile.districtOfficeId || computeDistrictOfficeId(homeOfficeId),
         startDate: fieldForm.startDate,
         endDate: fieldForm.endDate,
         location: fieldForm.location.trim(),
@@ -198,9 +216,17 @@ export default function EmployeeRequestsPage() {
                     Apply for Leave
                   </h2>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    অনুমোদনকারী: <strong className="text-slate-700 dark:text-slate-200">{approverHint}</strong>
+                    অনুমোদনকারী অফিস: <strong className="text-slate-700 dark:text-slate-200">{workingOfficeName || '—'}</strong>
+                    {' · '}অনুমোদনকারী: <strong className="text-slate-700 dark:text-slate-200">{approverHint}</strong>
                   </span>
                 </div>
+                {isAttachedRouting && (
+                  <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-xs text-sky-900 dark:text-sky-200">
+                    আপনি বর্তমানে <strong>{workingOfficeName}</strong> কার্যালয়ে সংযুক্ত থাকায় ছুটির আবেদন{' '}
+                    <strong>{workingOfficeName}</strong> কার্যালয়ে অনুমোদনের জন্য পাঠানো হবে
+                    {homeOfficeName ? ` (মূল কর্মস্থল: ${homeOfficeName})` : ''}।
+                  </div>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
@@ -274,9 +300,17 @@ export default function EmployeeRequestsPage() {
                     Request Field Duty
                   </h2>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    অনুমোদনকারী: <strong className="text-slate-700 dark:text-slate-200">{approverHint}</strong>
+                    অনুমোদনকারী অফিস: <strong className="text-slate-700 dark:text-slate-200">{workingOfficeName || '—'}</strong>
+                    {' · '}অনুমোদনকারী: <strong className="text-slate-700 dark:text-slate-200">{approverHint}</strong>
                   </span>
                 </div>
+                {isAttachedRouting && (
+                  <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-xs text-sky-900 dark:text-sky-200">
+                    আপনি বর্তমানে <strong>{workingOfficeName}</strong> কার্যালয়ে সংযুক্ত থাকায় মাঠ পর্যায়ের কাজের আবেদন{' '}
+                    <strong>{workingOfficeName}</strong> কার্যালয়ে অনুমোদনের জন্য পাঠানো হবে
+                    {homeOfficeName ? ` (মূল কর্মস্থল: ${homeOfficeName})` : ''}।
+                  </div>
+                )}
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   Approved field duty dates skip the office geofence check while still capturing GPS and selfie.
                 </p>
@@ -383,6 +417,12 @@ export default function EmployeeRequestsPage() {
                 </div>
                 <div className="text-xs text-slate-600 dark:text-slate-300">
                   {item.leaveType || item.location} · {item.reason}
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                  অনুমোদনকারী অফিস: <strong className="text-slate-700 dark:text-slate-200">{officeName(item.officeId)}</strong>
+                  {item.homeOfficeId && item.homeOfficeId !== item.officeId
+                    ? ` (মূল কর্মস্থল: ${officeName(item.homeOfficeId)})`
+                    : ''}
                 </div>
                 {item.status === 'pending' && (
                   <div className="text-[11px] text-amber-700 dark:text-amber-300">

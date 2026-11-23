@@ -5,6 +5,7 @@ import {
   signOut
 } from 'firebase/auth';
 import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -14,7 +15,8 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
-  where
+  where,
+  writeBatch
 } from 'firebase/firestore';
 import {
   CheckCircle2,
@@ -32,6 +34,7 @@ import UserCard from './UserCard.jsx';
 import UserTable from './UserTable.jsx';
 import UserDetailSheet from './UserDetailSheet.jsx';
 import UserFormSheet from './UserFormSheet.jsx';
+import TransferUserSheet from './TransferUserSheet.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   db,
@@ -44,11 +47,15 @@ import {
 } from '../../firebase/config.js';
 import { useData } from '../../context/DataContext.jsx';
 import { uploadImageSafe } from '../../utils/storageUpload.js';
-import { getTodayDhaka } from '../../utils/dhakaTime.js';
+import { addDaysDhaka, getTodayDhaka } from '../../utils/dhakaTime.js';
 import {
-  ROLES,
+  assignableRoles as getAssignableRoles,
+  getActingGrant,
+  getAuthorityOfficeIds,
   getPermissionScope,
-  getUserOfficeScopeIds
+  getRoleLabel,
+  getRoleMeta,
+  normalizeRole
 } from '../../lib/permissions.js';
 
 function buildCreateTaskList() {
@@ -76,12 +83,14 @@ function buildLinkTaskList(linkMethod) {
 }
 
 function supportsAdditionalCharge(role) {
+  const meta = getRoleMeta(role);
+  if (meta && !meta.chargeEligible) return false;
   const scope = getPermissionScope({ role, approvalStatus: 'approved', status: 'active' }, 'report.create');
   return scope === 'subtree' || scope === 'office';
 }
 
 export default function UsersPage() {
-  const { profile, effectiveAuthUser, offices, computeDistrictOfficeId, can, permissionScope } = useAuth();
+  const { profile, effectiveAuthUser, roleRegistry, offices, computeDistrictOfficeId, can, permissionScope } = useAuth();
   const { logAudit } = useData();
 
   const [loading, setLoading] = useState(true);
@@ -95,6 +104,8 @@ export default function UsersPage() {
 
   const [formSheetOpen, setFormSheetOpen] = useState(false);
   const [formMode, setFormMode] = useState('create'); // 'create' | 'link' | 'edit'
+  const [transferSheetOpen, setTransferSheetOpen] = useState(false);
+  const [assignmentsRefreshKey, setAssignmentsRefreshKey] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [confirmDeleteUser, setConfirmDeleteUser] = useState(null);
@@ -108,8 +119,15 @@ export default function UsersPage() {
   const toastTimerRef = useRef(null);
 
   const userViewScope = permissionScope('user.view');
+  const createScope = permissionScope('user.create');
   const editScope = permissionScope('user.edit');
-  const canCreateOrLinkUsers = editScope === 'all';
+  const assignableRolesForCreate = useMemo(
+    () => getAssignableRoles(effectiveAuthUser, roleRegistry, { permission: 'user.create' }),
+    [effectiveAuthUser, roleRegistry]
+  );
+  const canCreateUsers =
+    ['office', 'subtree', 'all'].includes(createScope) && assignableRolesForCreate.length > 0;
+  const canLinkUsers = createScope === 'all' || editScope === 'all';
 
   const showToast = useCallback((msg) => {
     setToastMsg(msg);
@@ -147,16 +165,40 @@ export default function UsersPage() {
           'ব্যবহারকারী তালিকা লোড করতে সময় বেশি লাগছে।'
         );
         list = snap.docs.map((d) => ({ uid: d.id, id: d.id, ...d.data() }));
-      } else {
-        const scopeIds = getUserOfficeScopeIds(effectiveAuthUser);
-        if (scopeIds.length > 0) {
-          const queries = [];
-          for (const oid of scopeIds) {
-            queries.push(getDocs(query(collection(db, 'users'), where('officeId', '==', oid))));
-            if (userViewScope === 'subtree') {
-              queries.push(getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', oid))));
-            }
+      } else if (userViewScope === 'self') {
+        const uid = profile?.uid || effectiveAuthUser.uid;
+        if (uid) {
+          const selfSnap = await getDoc(doc(db, 'users', uid));
+          if (selfSnap.exists()) {
+            list = [{ uid: selfSnap.id, id: selfSnap.id, ...selfSnap.data() }];
           }
+        }
+      } else {
+        const ownUserViewScope = getPermissionScope(
+          { ...effectiveAuthUser, actingOfficeId: '', actingRoleKey: '' },
+          'user.view',
+          roleRegistry
+        );
+        const actingGrant = getActingGrant(effectiveAuthUser, roleRegistry);
+        const actingUserViewScope = actingGrant?.role?.permissions?.['user.view'] || '';
+        const queries = [];
+        const addScopedUserQueries = (oid, scope) => {
+          queries.push(getDocs(query(collection(db, 'users'), where('officeId', '==', oid))));
+          if (scope === 'subtree') {
+            queries.push(getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', oid))));
+          }
+        };
+
+        if (ownUserViewScope === 'office' || ownUserViewScope === 'subtree') {
+          for (const oid of getAuthorityOfficeIds(effectiveAuthUser)) {
+            addScopedUserQueries(oid, ownUserViewScope);
+          }
+        }
+        if (actingGrant && (actingUserViewScope === 'office' || actingUserViewScope === 'subtree')) {
+          addScopedUserQueries(actingGrant.officeId, actingUserViewScope);
+        }
+
+        if (queries.length > 0) {
           const snaps = await withTimeout(
             Promise.all(queries),
             15000,
@@ -180,7 +222,7 @@ export default function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [userViewScope, effectiveAuthUser]);
+  }, [userViewScope, effectiveAuthUser, profile?.uid, roleRegistry]);
 
   useEffect(() => {
     loadUsers();
@@ -268,7 +310,21 @@ export default function UsersPage() {
   };
 
   const createUserDirectly = async (newUser, newPhotoFile) => {
-    if (submitting || !canCreateOrLinkUsers) return { ok: false };
+    if (submitting || !canCreateUsers) return { ok: false };
+
+    const targetDistrictOfficeId = computeDistrictOfficeId(newUser.officeId);
+    if (!newUser.officeId) {
+      return { ok: false, error: 'একটি অফিস নির্বাচন করুন।' };
+    }
+    if (
+      !can('user.create', {
+        officeId: newUser.officeId,
+        districtOfficeId: targetDistrictOfficeId,
+        newRole: newUser.role
+      })
+    ) {
+      return { ok: false, error: 'নির্বাচিত অফিস বা রোলের জন্য আপনার ব্যবহারকারী তৈরির অনুমতি নেই।' };
+    }
 
     let tasks = buildCreateTaskList();
     const updateTask = (id, status, detail = '') => {
@@ -352,7 +408,7 @@ export default function UsersPage() {
 
       updateTask('write', 'running', `Saving users/${targetUid}...`);
       const districtOfficeId = computeDistrictOfficeId(newUser.officeId);
-      const additionalOfficeIds =
+      const requestedAdditionalOfficeIds =
         supportsAdditionalCharge(newUser.role) && Array.isArray(newUser.additionalOfficeIds)
           ? Array.from(new Set(newUser.additionalOfficeIds.filter((id) => id && id !== newUser.officeId))).slice(0, 20)
           : [];
@@ -366,7 +422,7 @@ export default function UsersPage() {
           email: normalizedEmail,
           officeId: newUser.officeId || '',
           districtOfficeId,
-          additionalOfficeIds,
+          additionalOfficeIds: [],
           joiningDate: newUser.joiningDate,
           status: 'active',
           resignationDate: null,
@@ -377,6 +433,35 @@ export default function UsersPage() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
+        if (requestedAdditionalOfficeIds.length > 0 && permissionScope('assignment.manage') === 'all') {
+          await updateDoc(doc(db, 'users', targetUid), {
+            additionalOfficeIds: requestedAdditionalOfficeIds,
+            updatedAt: serverTimestamp()
+          });
+        }
+        try {
+          await withTimeout(
+            addDoc(collection(db, 'users', targetUid, 'assignments'), {
+              kind: 'primary',
+              officeId: newUser.officeId,
+              districtOfficeId: districtOfficeId || '',
+              officeName: officeName(newUser.officeId) || newUser.officeId,
+              designation: trimmedDesignation,
+              roleKey: newUser.role,
+              roleLabel: getRoleLabel(newUser.role, roleRegistry),
+              startDate: newUser.joiningDate,
+              endDate: null,
+              type: 'joined',
+              createdBy: profile.uid,
+              createdByName: profile.name || profile.email || 'Admin',
+              createdAt: serverTimestamp()
+            }),
+            10000,
+            'Initial assignment write timed out'
+          );
+        } catch (assignErr) {
+          console.warn('Initial assignment record write failed:', assignErr);
+        }
         updateTask('write', 'done', `Saved users/${targetUid}`);
       } catch (fsErr) {
         updateTask('write', 'error', fsErr.message || 'Firestore write failed');
@@ -403,7 +488,7 @@ export default function UsersPage() {
             newValue: `${trimmedName} (${newUser.role})`,
             reason: recoveredFromAuth
               ? 'Created missing Firestore profile for existing Auth email'
-              : 'Direct user creation by Super Admin',
+              : 'Direct user creation by authorized manager',
             officeId: newUser.officeId || '',
             districtOfficeId
           }),
@@ -444,7 +529,7 @@ export default function UsersPage() {
   };
 
   const createProfileForExistingAuth = async (linkForm, linkPhotoFile) => {
-    if (submitting || !canCreateOrLinkUsers) return { ok: false };
+    if (submitting || !canLinkUsers) return { ok: false };
 
     let tasks = buildLinkTaskList(linkForm.linkMethod);
     const updateTask = (id, status, detail = '') => {
@@ -552,7 +637,7 @@ export default function UsersPage() {
 
       updateTask('write', 'running', `Writing users/${targetUid}...`);
       const districtOfficeId = computeDistrictOfficeId(linkForm.officeId);
-      const additionalOfficeIds =
+      const requestedAdditionalOfficeIds =
         supportsAdditionalCharge(linkForm.role) && Array.isArray(linkForm.additionalOfficeIds)
           ? Array.from(new Set(linkForm.additionalOfficeIds.filter((id) => id && id !== linkForm.officeId))).slice(0, 20)
           : [];
@@ -566,7 +651,7 @@ export default function UsersPage() {
           email: targetEmail,
           officeId: linkForm.officeId || '',
           districtOfficeId,
-          additionalOfficeIds,
+          additionalOfficeIds: [],
           joiningDate: linkForm.joiningDate,
           status: linkForm.status,
           resignationDate: linkForm.status === 'resigned' ? getTodayDhaka() : null,
@@ -577,6 +662,39 @@ export default function UsersPage() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
+        if (requestedAdditionalOfficeIds.length > 0 && permissionScope('assignment.manage') === 'all') {
+          await updateDoc(doc(db, 'users', targetUid), {
+            additionalOfficeIds: requestedAdditionalOfficeIds,
+            updatedAt: serverTimestamp()
+          });
+        }
+        if (linkForm.officeId && linkForm.role && targetUid !== profile?.uid) {
+          try {
+            await withTimeout(
+              addDoc(collection(db, 'users', targetUid, 'assignments'), {
+                kind: 'primary',
+                officeId: linkForm.officeId,
+                districtOfficeId: districtOfficeId || '',
+                officeName: String(officeName(linkForm.officeId) || linkForm.officeId).slice(0, 160),
+                designation: trimmedDesignation.slice(0, 120),
+                roleKey: linkForm.role,
+                roleLabel: String(getRoleLabel(linkForm.role, roleRegistry) || linkForm.role).slice(0, 80),
+                startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(linkForm.joiningDate || ''))
+                  ? linkForm.joiningDate
+                  : getTodayDhaka(),
+                endDate: linkForm.status === 'resigned' ? getTodayDhaka() : null,
+                type: 'joined',
+                createdBy: profile.uid,
+                createdByName: String(profile.name || profile.email || 'Admin').slice(0, 120),
+                createdAt: serverTimestamp()
+              }),
+              10000,
+              'Initial assignment write timed out'
+            );
+          } catch (assignErr) {
+            console.warn('Initial assignment record write failed:', assignErr);
+          }
+        }
         updateTask('write', 'done', `Saved users/${targetUid}`);
       } catch (fsErr) {
         updateTask('write', 'error', fsErr.message || 'Firestore write failed');
@@ -678,18 +796,89 @@ export default function UsersPage() {
   };
 
   const onStatusChange = async (u, nextStatus) => {
-    if (!can('user.edit', { uid: u.uid || u.id, role: u.role, officeId: u.officeId, districtOfficeId: u.districtOfficeId })) {
+    const targetUid = u.uid || u.id;
+    if (!targetUid || !can('user.edit', { uid: targetUid, role: u.role, officeId: u.officeId, districtOfficeId: u.districtOfficeId })) {
       return;
     }
-    await updateUserField(
-      u,
-      {
+    const nextResignationDate = nextStatus === 'resigned' ? u.resignationDate || getTodayDhaka() : null;
+    if (targetUid === profile?.uid) {
+      await updateUserField(
+        u,
+        {
+          status: nextStatus,
+          resignationDate: nextResignationDate
+        },
+        nextStatus === 'active' ? 'User activated' : 'User deactivated',
+        nextStatus === 'active' ? 'USER_ACTIVATED' : 'USER_DEACTIVATED'
+      );
+      return;
+    }
+
+    setErrorMsg('');
+    setActionBusy(true);
+    try {
+      const openPrimarySnap = await getDocs(
+        query(
+          collection(db, 'users', targetUid, 'assignments'),
+          where('kind', '==', 'primary'),
+          where('endDate', '==', null)
+        )
+      );
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'users', targetUid), {
         status: nextStatus,
-        resignationDate: nextStatus === 'resigned' ? u.resignationDate || getTodayDhaka() : null
-      },
-      nextStatus === 'active' ? 'User activated' : 'User deactivated',
-      nextStatus === 'active' ? 'USER_ACTIVATED' : 'USER_DEACTIVATED'
-    );
+        resignationDate: nextResignationDate,
+        updatedAt: serverTimestamp()
+      });
+
+      if (nextStatus === 'resigned') {
+        openPrimarySnap.docs.forEach((d) => {
+          batch.update(d.ref, {
+            endDate: nextResignationDate,
+            closedBy: profile.uid,
+            closedAt: serverTimestamp()
+          });
+        });
+      } else if (nextStatus === 'active' && openPrimarySnap.empty && u.officeId && u.role) {
+        const newRef = doc(collection(db, 'users', targetUid, 'assignments'));
+        batch.set(newRef, {
+          kind: 'primary',
+          officeId: u.officeId,
+          districtOfficeId: u.districtOfficeId || computeDistrictOfficeId(u.officeId) || '',
+          officeName: String(officeName(u.officeId) || u.officeId).slice(0, 160),
+          designation: String(u.designation || '').slice(0, 120),
+          roleKey: u.role,
+          roleLabel: String(getRoleLabel(u.role, roleRegistry) || u.role).slice(0, 80),
+          startDate: getTodayDhaka(),
+          endDate: null,
+          type: 'transfer',
+          reason: 'পুনরায় সক্রিয়করণ',
+          createdBy: profile.uid,
+          createdByName: String(profile.name || profile.email || 'Admin').slice(0, 120),
+          createdAt: serverTimestamp()
+        });
+      }
+
+      await batch.commit();
+      await logAudit({
+        actor: profile,
+        action: nextStatus === 'active' ? 'USER_ACTIVATED' : 'USER_DEACTIVATED',
+        targetCollection: 'users',
+        targetId: targetUid,
+        newValue: JSON.stringify({ status: nextStatus, resignationDate: nextResignationDate }),
+        reason: 'Scoped administrative update',
+        officeId: u.officeId || '',
+        districtOfficeId: u.districtOfficeId || ''
+      });
+      setAssignmentsRefreshKey((k) => k + 1);
+      await loadUsers();
+      showToast(nextStatus === 'active' ? 'User activated' : 'User deactivated');
+    } catch (err) {
+      setErrorMsg('স্ট্যাটাস আপডেট ব্যর্থ হয়েছে।');
+      handleFirestoreError(err, OperationType.UPDATE, `users/${targetUid}`);
+    } finally {
+      setActionBusy(false);
+    }
   };
 
   const resetBoundDevice = async (u) => {
@@ -700,10 +889,41 @@ export default function UsersPage() {
   };
 
   const approveUser = async (u) => {
-    if (!can('user.approve', { uid: u.uid || u.id, role: u.role, officeId: u.officeId, districtOfficeId: u.districtOfficeId })) {
+    const targetUid = u.uid || u.id;
+    if (!can('user.approve', { uid: targetUid, role: u.role, officeId: u.officeId, districtOfficeId: u.districtOfficeId })) {
       return;
     }
-    await updateUserField(u, { approvalStatus: 'approved' }, 'User approved', 'USER_APPROVED');
+    const ok = await updateUserField(u, { approvalStatus: 'approved' }, 'User approved', 'USER_APPROVED');
+    if (ok && targetUid && targetUid !== profile?.uid && u.officeId && u.role) {
+      try {
+        const existingAssignSnap = await getDocs(
+          query(collection(db, 'users', targetUid, 'assignments'), where('kind', '==', 'primary'))
+        );
+        if (existingAssignSnap.empty) {
+          const distId = u.districtOfficeId || computeDistrictOfficeId(u.officeId) || '';
+          await addDoc(collection(db, 'users', targetUid, 'assignments'), {
+            kind: 'primary',
+            officeId: u.officeId,
+            districtOfficeId: distId,
+            officeName: String(officeName(u.officeId) || u.officeId).slice(0, 160),
+            designation: String(u.designation || '').slice(0, 120),
+            roleKey: u.role,
+            roleLabel: String(getRoleLabel(u.role, roleRegistry) || u.role).slice(0, 80),
+            startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(u.joiningDate || ''))
+              ? u.joiningDate
+              : getTodayDhaka(),
+            endDate: null,
+            type: 'joined',
+            createdBy: profile.uid,
+            createdByName: String(profile.name || profile.email || 'Admin').slice(0, 120),
+            createdAt: serverTimestamp()
+          });
+          setAssignmentsRefreshKey((k) => k + 1);
+        }
+      } catch (assignErr) {
+        console.warn('Initial assignment record write failed:', assignErr);
+      }
+    }
   };
 
   const executeDeleteUser = async () => {
@@ -740,8 +960,9 @@ export default function UsersPage() {
 
   const saveUserEdits = async (u, formValues) => {
     if (submitting) return { ok: false };
+    const targetUid = u.uid || u.id;
     const targetScopeObj = {
-      uid: u.uid || u.id,
+      uid: targetUid,
       role: u.role,
       officeId: u.officeId || '',
       districtOfficeId: u.districtOfficeId || ''
@@ -749,13 +970,26 @@ export default function UsersPage() {
     if (!can('user.edit', targetScopeObj)) {
       return { ok: false, error: 'You do not have permission to edit this user.' };
     }
+    const officeId = formValues.officeId || '';
+    const districtOfficeId = computeDistrictOfficeId(officeId);
+    if (
+      officeId !== (u.officeId || '') &&
+      !can('user.edit', {
+        uid: targetUid,
+        role: u.role,
+        officeId,
+        districtOfficeId
+      })
+    ) {
+      return { ok: false, error: 'নির্বাচিত নতুন অফিসের জন্য আপনার ব্যবহারকারী সম্পাদনার অনুমতি নেই।' };
+    }
     if (formValues.role !== u.role) {
       const canAssign = can('user.role.assign', {
-        uid: u.uid || u.id,
+        uid: targetUid,
         currentRole: u.role,
         newRole: formValues.role,
-        officeId: formValues.officeId || u.officeId || '',
-        districtOfficeId: computeDistrictOfficeId(formValues.officeId || u.officeId || '')
+        officeId: officeId || u.officeId || '',
+        districtOfficeId: computeDistrictOfficeId(officeId || u.officeId || '')
       });
       if (!canAssign) {
         return { ok: false, error: 'You do not have permission to assign this role.' };
@@ -764,17 +998,20 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const officeId = formValues.officeId || '';
-      const districtOfficeId = computeDistrictOfficeId(officeId);
+      if (!formValues.role && !u.role) {
+        return { ok: false, error: 'একটি রোল নির্বাচন করুন।' };
+      }
+      const nextRole = formValues.role || u.role;
+      const nextDesignation = formValues.designation.trim();
       const patch = {
         name: formValues.name.trim(),
-        designation: formValues.designation.trim(),
+        designation: nextDesignation,
         mobile: formValues.mobile.trim(),
         officeId,
         districtOfficeId,
         address: formValues.address.trim(),
         joiningDate: formValues.joiningDate,
-        role: formValues.role || ROLES.employee.key,
+        role: nextRole,
         status: formValues.status,
         resignationDate:
           formValues.status === 'resigned'
@@ -782,20 +1019,247 @@ export default function UsersPage() {
             : null,
         approvalStatus: formValues.approvalStatus
       };
-      if (canCreateOrLinkUsers) {
-        patch.additionalOfficeIds =
-          supportsAdditionalCharge(formValues.role) && Array.isArray(formValues.additionalOfficeIds)
-            ? Array.from(new Set(formValues.additionalOfficeIds.filter((id) => id && id !== officeId))).slice(0, 20)
-            : [];
+
+      const prevRoleNorm = normalizeRole(u.role, roleRegistry) || u.role || '';
+      const nextRoleNorm = normalizeRole(nextRole, roleRegistry) || nextRole || '';
+      const officeChanged = officeId !== (u.officeId || '');
+      const roleChanged = nextRoleNorm !== prevRoleNorm;
+      const designationChanged = nextDesignation !== (u.designation || '').trim();
+      const postingChanged = (officeChanged || roleChanged || designationChanged) && targetUid !== profile?.uid;
+
+      if (postingChanged && officeId && nextRole) {
+        const todayStr = getTodayDhaka();
+        const closeDateStr = addDaysDhaka(todayStr, -1);
+        const eventType = officeChanged ? 'transfer' : roleChanged ? 'role_change' : 'designation_change';
+        const openPrimarySnap = await getDocs(
+          query(
+            collection(db, 'users', targetUid, 'assignments'),
+            where('kind', '==', 'primary'),
+            where('endDate', '==', null)
+          )
+        );
+        const batch = writeBatch(db);
+        const userUpdatePayload = {
+          ...patch,
+          updatedAt: serverTimestamp()
+        };
+        if (permissionScope('assignment.manage') === 'all') {
+          const nextAdditional =
+            supportsAdditionalCharge(nextRole) && Array.isArray(formValues.additionalOfficeIds)
+              ? Array.from(new Set(formValues.additionalOfficeIds.filter((id) => id && id !== officeId))).slice(0, 20)
+              : [];
+          userUpdatePayload.additionalOfficeIds = nextAdditional;
+        }
+        batch.update(doc(db, 'users', targetUid), userUpdatePayload);
+        openPrimarySnap.docs.forEach((d) => {
+          batch.update(d.ref, {
+            endDate: formValues.status === 'resigned' ? patch.resignationDate : closeDateStr,
+            closedBy: profile.uid,
+            closedAt: serverTimestamp()
+          });
+        });
+        const newAssignRef = doc(collection(db, 'users', targetUid, 'assignments'));
+        batch.set(newAssignRef, {
+          kind: 'primary',
+          officeId,
+          districtOfficeId: districtOfficeId || '',
+          officeName: String(officeName(officeId) || officeId).slice(0, 160),
+          designation: nextDesignation.slice(0, 120),
+          roleKey: nextRole,
+          roleLabel: String(getRoleLabel(nextRole, roleRegistry) || nextRole).slice(0, 80),
+          startDate: todayStr,
+          endDate: formValues.status === 'resigned' ? patch.resignationDate : null,
+          type: eventType,
+          createdBy: profile.uid,
+          createdByName: String(profile.name || profile.email || 'Admin').slice(0, 120),
+          createdAt: serverTimestamp()
+        });
+        await batch.commit();
+        await logAudit({
+          actor: profile,
+          action: 'USER_EDITED',
+          targetCollection: 'users',
+          targetId: targetUid,
+          newValue: JSON.stringify(patch),
+          reason: `Updated user & recorded ${eventType}`,
+          officeId,
+          districtOfficeId
+        });
+        setAssignmentsRefreshKey((k) => k + 1);
+        await loadUsers();
+        showToast('Changes saved');
+      } else {
+        const ok = await updateUserField(u, patch, 'Changes saved', 'USER_EDITED');
+        if (!ok) {
+          return { ok: false, error: 'Failed to save changes. Please verify inputs and permissions.' };
+        }
+        if (permissionScope('assignment.manage') === 'all') {
+          const nextAdditional =
+            supportsAdditionalCharge(nextRole) && Array.isArray(formValues.additionalOfficeIds)
+              ? Array.from(new Set(formValues.additionalOfficeIds.filter((id) => id && id !== officeId))).slice(0, 20)
+              : [];
+          const prevAdditional = Array.isArray(u.additionalOfficeIds) ? u.additionalOfficeIds : [];
+          const changedAdditional =
+            nextAdditional.length !== prevAdditional.length ||
+            nextAdditional.some((id, idx) => prevAdditional[idx] !== id);
+          if (changedAdditional && targetUid) {
+            await updateDoc(doc(db, 'users', targetUid), {
+              additionalOfficeIds: nextAdditional,
+              updatedAt: serverTimestamp()
+            });
+            await loadUsers();
+          }
+        }
       }
-      const ok = await updateUserField(u, patch, 'Changes saved', 'USER_EDITED');
-      if (ok) {
-        setFormSheetOpen(false);
-        return { ok: true };
-      }
-      return { ok: false, error: 'Failed to save changes. Please verify inputs and permissions.' };
+      setFormSheetOpen(false);
+      return { ok: true };
     } catch (err) {
       return { ok: false, error: err?.message || 'Failed to save changes.' };
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const executeTransfer = async (u, formValues) => {
+    if (submitting) return { ok: false };
+    const targetUid = u.uid || u.id;
+    if (!targetUid) return { ok: false, error: 'ব্যবহারকারীর আইডি পাওয়া যায়নি।' };
+    if (targetUid === profile?.uid) {
+      return { ok: false, error: 'নিজের বদলি বা পদায়ন নিজে সম্পন্ন করা যায় না।' };
+    }
+
+    const oldScopeObj = {
+      uid: targetUid,
+      role: u.role,
+      officeId: u.officeId || '',
+      districtOfficeId: u.districtOfficeId || ''
+    };
+    const nextOfficeId = formValues.officeId || '';
+    const nextDistrictOfficeId = computeDistrictOfficeId(nextOfficeId);
+    const newScopeObj = {
+      uid: targetUid,
+      role: u.role,
+      officeId: nextOfficeId,
+      districtOfficeId: nextDistrictOfficeId
+    };
+
+    if (!can('user.edit', oldScopeObj) || !can('user.edit', newScopeObj)) {
+      return { ok: false, error: 'পুরোনো অথবা নতুন অফিসের জন্য আপনার বদলি/সম্পাদনার অনুমতি নেই।' };
+    }
+
+    const prevRoleNorm = normalizeRole(u.role, roleRegistry) || u.role || '';
+    const nextRole = formValues.role || u.role || '';
+    const nextRoleNorm = normalizeRole(nextRole, roleRegistry) || nextRole || '';
+    const isOfficeChanging = nextOfficeId !== (u.officeId || '');
+    const isRoleChanging = nextRoleNorm !== prevRoleNorm;
+
+    if (isRoleChanging) {
+      const canAssign = can('user.role.assign', {
+        uid: targetUid,
+        currentRole: u.role,
+        newRole: nextRole,
+        officeId: nextOfficeId || u.officeId || '',
+        districtOfficeId: nextDistrictOfficeId || u.districtOfficeId || ''
+      });
+      if (!canAssign) {
+        return { ok: false, error: 'নির্বাচিত রোল পরিবর্তনের জন্য আপনার অনুমতি নেই।' };
+      }
+    }
+
+    setSubmitting(true);
+    setErrorMsg('');
+    try {
+      const nextDesignation = formValues.designation.trim().slice(0, 120);
+      const effectiveDate = formValues.effectiveDate;
+      const closeDate = addDaysDhaka(effectiveDate, -1);
+      const eventType = isOfficeChanging
+        ? 'transfer'
+        : isRoleChanging
+        ? 'role_change'
+        : 'designation_change';
+
+      const openPrimarySnap = await withTimeout(
+        getDocs(
+          query(
+            collection(db, 'users', targetUid, 'assignments'),
+            where('kind', '==', 'primary'),
+            where('endDate', '==', null)
+          )
+        ),
+        12000,
+        'চলমান পদায়ন রেকর্ড যাচাই করতে সময় বেশি লাগছে।'
+      );
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'users', targetUid), {
+        officeId: nextOfficeId,
+        districtOfficeId: nextDistrictOfficeId,
+        designation: nextDesignation,
+        role: nextRole,
+        updatedAt: serverTimestamp()
+      });
+
+      openPrimarySnap.docs.forEach((d) => {
+        batch.update(d.ref, {
+          endDate: closeDate,
+          closedBy: profile.uid,
+          closedAt: serverTimestamp()
+        });
+      });
+
+      const orderNo = (formValues.orderNo || '').trim().slice(0, 120);
+      const orderDate = (formValues.orderDate || '').trim();
+      const reason = (formValues.reason || '').trim().slice(0, 500);
+      const newAssignRef = doc(collection(db, 'users', targetUid, 'assignments'));
+      batch.set(newAssignRef, {
+        kind: 'primary',
+        officeId: nextOfficeId,
+        districtOfficeId: nextDistrictOfficeId || '',
+        officeName: String(officeName(nextOfficeId) || nextOfficeId).slice(0, 160),
+        designation: nextDesignation,
+        roleKey: nextRole,
+        roleLabel: String(getRoleLabel(nextRole, roleRegistry) || nextRole).slice(0, 80),
+        startDate: effectiveDate,
+        endDate: null,
+        type: eventType,
+        ...(orderNo ? { orderNo } : {}),
+        ...(orderDate ? { orderDate } : {}),
+        ...(reason ? { reason } : {}),
+        createdBy: profile.uid,
+        createdByName: String(profile.name || profile.email || 'Admin').slice(0, 120),
+        createdAt: serverTimestamp()
+      });
+
+      await withTimeout(batch.commit(), 15000, 'বদলি ও পদায়ন সংরক্ষণ করতে সময় বেশি লাগছে।');
+
+      try {
+        await withTimeout(
+          logAudit({
+            actor: profile,
+            action: isOfficeChanging ? 'USER_TRANSFERRED' : 'USER_POSTING_CHANGED',
+            targetCollection: 'users',
+            targetId: targetUid,
+            oldValue: `${officeName(u.officeId) || u.officeId} · ${u.designation || ''} (${u.role})`,
+            newValue: `${officeName(nextOfficeId) || nextOfficeId} · ${nextDesignation} (${nextRole})`,
+            reason: reason || `Effective ${effectiveDate}${orderNo ? ` (Order: ${orderNo})` : ''}`,
+            officeId: nextOfficeId,
+            districtOfficeId: nextDistrictOfficeId
+          }),
+          10000,
+          'Audit log timed out'
+        );
+      } catch (auditErr) {
+        console.warn('Audit log failed after transfer:', auditErr);
+      }
+
+      setAssignmentsRefreshKey((k) => k + 1);
+      setTransferSheetOpen(false);
+      await loadUsers();
+      showToast(`${u.name || u.email || targetUid}-এর বদলি / পদায়ন সংরক্ষিত হয়েছে।`);
+      return { ok: true };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${targetUid}`);
+      return { ok: false, error: err?.message || 'বদলি / পদায়ন সংরক্ষণ করা যায়নি।' };
     } finally {
       setSubmitting(false);
     }
@@ -820,6 +1284,10 @@ export default function UsersPage() {
     setSheetTasks([]);
     setSheetFeedbackSummary('');
     setFormSheetOpen(true);
+  };
+
+  const openTransferSheet = () => {
+    setTransferSheetOpen(true);
   };
 
   const openUserDetail = (u) => {
@@ -849,24 +1317,28 @@ export default function UsersPage() {
             </p>
           </div>
 
-          {canCreateOrLinkUsers && (
+          {(canCreateUsers || canLinkUsers) && (
             <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              <button
-                type="button"
-                onClick={openLinkSheet}
-                className="min-h-[44px] px-4 py-2.5 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-              >
-                <Link2 className="w-4 h-4 shrink-0" />
-                <span>Link Auth user</span>
-              </button>
-              <button
-                type="button"
-                onClick={openCreateSheet}
-                className="min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center gap-2 shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-              >
-                <UserPlus className="w-4 h-4 shrink-0" />
-                <span>New user</span>
-              </button>
+              {canLinkUsers && (
+                <button
+                  type="button"
+                  onClick={openLinkSheet}
+                  className="min-h-[44px] px-4 py-2.5 rounded-[14px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                >
+                  <Link2 className="w-4 h-4 shrink-0" />
+                  <span>Link Auth user</span>
+                </button>
+              )}
+              {canCreateUsers && (
+                <button
+                  type="button"
+                  onClick={openCreateSheet}
+                  className="min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center gap-2 shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                >
+                  <UserPlus className="w-4 h-4 shrink-0" />
+                  <span>New user</span>
+                </button>
+              )}
             </div>
           )}
         </section>
@@ -1049,8 +1521,10 @@ export default function UsersPage() {
         user={selectedUser}
         officeName={officeName}
         busy={actionBusy || submitting}
+        assignmentsRefreshKey={assignmentsRefreshKey}
         onClose={() => setDetailOpen(false)}
         onEdit={openEditSheet}
+        onTransfer={openTransferSheet}
         onResetDevice={resetBoundDevice}
         onToggleStatus={onStatusChange}
         onApprove={approveUser}
@@ -1071,6 +1545,16 @@ export default function UsersPage() {
         onCreateSubmit={createUserDirectly}
         onLinkSubmit={createProfileForExistingAuth}
         onEditSubmit={saveUserEdits}
+      />
+
+      {/* Stacked Transfer / Posting Bottom Sheet */}
+      <TransferUserSheet
+        open={transferSheetOpen && Boolean(selectedUser)}
+        user={selectedUser}
+        offices={offices}
+        submitting={submitting}
+        onClose={() => setTransferSheetOpen(false)}
+        onSubmit={executeTransfer}
       />
 
       <ConfirmSheet

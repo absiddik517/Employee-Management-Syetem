@@ -23,7 +23,7 @@ import { auth, db, storage, OperationType, handleFirestoreError, withTimeout } f
 import { uploadImageSafe } from '../utils/storageUpload.js';
 import { getLocalDeviceId } from '../utils/device.js';
 import {
-  ROLES,
+  BOOTSTRAP_SUPER_EMAILS,
   can as canCheck,
   canReview as canReviewCheck,
   assignableRoles as getAssignableRoles,
@@ -33,18 +33,19 @@ import {
   getHomePathForUser,
   canSelectMultipleOffices,
   getPermissionScope,
-  setPermissionOverrides
+  getActingGrant,
+  setRoleRegistry,
+  getDefaultRoleKey,
+  isBootstrapSuperUser
 } from '../lib/permissions.js';
 
 const AuthContext = createContext(null);
-
-const BOOTSTRAP_SUPER_ADMIN_EMAILS = ['absiddik5177@gmail.com', 'absiddik517@gmail.com'];
 
 function getActiveOfficeStorageKey(uid) {
   return `ems_active_office_${uid}`;
 }
 
-export function buildAssignedOffices(targetProfile, officeList) {
+export function buildAssignedOffices(targetProfile, officeList, registry) {
   if (!targetProfile || !Array.isArray(officeList) || officeList.length === 0) return [];
   const officeById = new Map(officeList.map((o) => [o.id, o]));
   const result = [];
@@ -76,6 +77,30 @@ export function buildAssignedOffices(targetProfile, officeList) {
     }
   }
 
+  if (targetProfile.actingOfficeId && targetProfile.actingRoleKey && !seen.has(targetProfile.actingOfficeId)) {
+    const actingOffice = officeById.get(targetProfile.actingOfficeId);
+    if (actingOffice) {
+      const actingGrant = getActingGrant(targetProfile, registry);
+      const actReportScope = actingGrant?.role?.permissions?.['report.create'];
+      const ownReportScope = getPermissionScope(targetProfile, 'report.create', registry);
+      if (
+        actReportScope === 'office' ||
+        actReportScope === 'subtree' ||
+        ownReportScope === 'office' ||
+        ownReportScope === 'subtree'
+      ) {
+        result.push({
+          id: actingOffice.id,
+          office: actingOffice,
+          chargeType: 'acting',
+          actingRoleKey: targetProfile.actingRoleKey,
+          isPrimary: false
+        });
+        seen.add(actingOffice.id);
+      }
+    }
+  }
+
   return result;
 }
 
@@ -91,60 +116,80 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState('');
   const [localDeviceId] = useState(() => getLocalDeviceId());
   const [deviceMismatch, setDeviceMismatch] = useState(false);
-  const [permissionOverrides, setPermissionOverridesState] = useState({});
-  const [permissionsMeta, setPermissionsMeta] = useState({ updatedAt: null, updatedByName: '' });
+  const [roles, setRoles] = useState([]);
+  const [rolesLoadedUid, setRolesLoadedUid] = useState(null);
+  const [defaultRoleKey, setDefaultRoleKey] = useState('');
+
+  const rolesReady = !firebaseUser || rolesLoadedUid === firebaseUser.uid;
 
   const officesRef = useRef([]);
   officesRef.current = offices;
+  const rolesRef = useRef([]);
+  rolesRef.current = roles;
+  const defaultRoleKeyRef = useRef('');
+  defaultRoleKeyRef.current = defaultRoleKey;
   const authFlowInProgressRef = useRef(false);
 
-  const isAuthenticated = !!firebaseUser && !!profile;
-  const isApproved = profile?.approvalStatus === 'approved' && profile?.status === 'active';
+  const roleRegistry = useMemo(
+    () => setRoleRegistry(roles, { defaultRoleKey }),
+    [roles, defaultRoleKey]
+  );
+
   const isBootstrapSuperAdmin = useMemo(
     () =>
       !!firebaseUser &&
       firebaseUser.emailVerified === true &&
-      BOOTSTRAP_SUPER_ADMIN_EMAILS.includes((firebaseUser.email || '').toLowerCase()),
+      BOOTSTRAP_SUPER_EMAILS.includes((firebaseUser.email || '').toLowerCase()),
     [firebaseUser]
   );
 
+  const isAuthenticated = !!firebaseUser && !!profile;
+  const isApproved =
+    isBootstrapSuperAdmin || (profile?.approvalStatus === 'approved' && profile?.status === 'active');
+
   const normalizedRole = useMemo(
-    () => (isBootstrapSuperAdmin ? ROLES.super_admin.key : normalizeRole(profile?.role)),
-    [isBootstrapSuperAdmin, profile?.role]
+    () => normalizeRole(profile?.role, roleRegistry),
+    [profile?.role, roleRegistry]
   );
   const userRole = normalizedRole;
-  const roleMeta = useMemo(() => getRoleMeta(normalizedRole), [normalizedRole]);
-  const roleLabel = useMemo(() => getRoleLabel(normalizedRole), [normalizedRole]);
+  const roleMeta = useMemo(() => getRoleMeta(normalizedRole, roleRegistry), [normalizedRole, roleRegistry]);
+  const roleLabel = useMemo(() => {
+    if (isBootstrapSuperAdmin && !roleMeta) {
+      return 'Bootstrap Super User';
+    }
+    return getRoleLabel(profile?.role, roleRegistry);
+  }, [isBootstrapSuperAdmin, roleMeta, profile?.role, roleRegistry]);
 
   const effectiveAuthUser = useMemo(() => {
     if (!profile) return null;
     if (!isBootstrapSuperAdmin) return profile;
     return {
       ...profile,
-      role: ROLES.super_admin.key,
+      isBootstrapSuper: true,
+      emailVerified: true,
       approvalStatus: 'approved',
       status: 'active'
     };
   }, [profile, isBootstrapSuperAdmin]);
 
   const can = useCallback(
-    (permission, target) => canCheck(effectiveAuthUser, permission, target, permissionOverrides),
-    [effectiveAuthUser, permissionOverrides]
+    (permission, target) => canCheck(effectiveAuthUser, permission, target, roleRegistry),
+    [effectiveAuthUser, roleRegistry]
   );
 
   const canReview = useCallback(
-    (applicant, kind = 'leave') => canReviewCheck(effectiveAuthUser, applicant, kind, permissionOverrides),
-    [effectiveAuthUser, permissionOverrides]
+    (applicant, kind = 'leave') => canReviewCheck(effectiveAuthUser, applicant, kind, roleRegistry),
+    [effectiveAuthUser, roleRegistry]
   );
 
   const permissionScope = useCallback(
-    (permission) => getPermissionScope(effectiveAuthUser, permission, permissionOverrides),
-    [effectiveAuthUser, permissionOverrides]
+    (permission) => getPermissionScope(effectiveAuthUser, permission, roleRegistry),
+    [effectiveAuthUser, roleRegistry]
   );
 
   const assignableRoles = useMemo(
-    () => getAssignableRoles(effectiveAuthUser, permissionOverrides),
-    [effectiveAuthUser, permissionOverrides]
+    () => getAssignableRoles(effectiveAuthUser, roleRegistry),
+    [effectiveAuthUser, roleRegistry]
   );
 
   const primaryOffice = useMemo(
@@ -153,13 +198,13 @@ export function AuthProvider({ children }) {
   );
 
   const assignedOffices = useMemo(
-    () => buildAssignedOffices(profile, offices),
-    [profile, offices]
+    () => buildAssignedOffices(profile, offices, roleRegistry),
+    [profile, offices, roleRegistry]
   );
 
   const hasMultipleOffices = useMemo(
-    () => canSelectMultipleOffices(effectiveAuthUser, assignedOffices.length, permissionOverrides),
-    [effectiveAuthUser, assignedOffices.length, permissionOverrides]
+    () => canSelectMultipleOffices(effectiveAuthUser, assignedOffices.length, roleRegistry),
+    [effectiveAuthUser, assignedOffices.length, roleRegistry]
   );
 
   const activeOfficeAssignment = useMemo(() => {
@@ -181,11 +226,11 @@ export function AuthProvider({ children }) {
       setActiveOfficeId('');
       return '';
     }
-    const assigned = buildAssignedOffices(targetProfile, officeList);
+    const assigned = buildAssignedOffices(targetProfile, officeList, roleRegistry);
     const uid = targetProfile.uid || targetProfile.id;
     const storageKey = uid ? getActiveOfficeStorageKey(uid) : '';
 
-    if (!canSelectMultipleOffices(targetProfile, assigned.length, permissionOverrides)) {
+    if (!canSelectMultipleOffices(targetProfile, assigned.length, roleRegistry)) {
       const singleId = assigned[0]?.id || targetProfile.officeId || '';
       setActiveOfficeId(singleId);
       if (storageKey && singleId) {
@@ -223,13 +268,13 @@ export function AuthProvider({ children }) {
     const nextId = valid ? stored : '';
     setActiveOfficeId(nextId);
     return nextId;
-  }, [permissionOverrides]);
+  }, [roleRegistry]);
 
   const selectActiveOffice = useCallback(
     (officeId) => {
       const uid = profile?.uid || profile?.id || firebaseUser?.uid;
       if (!officeId) return false;
-      const assigned = buildAssignedOffices(profile, officesRef.current);
+      const assigned = buildAssignedOffices(profile, officesRef.current, roleRegistry);
       if (!assigned.some((item) => item.id === officeId)) return false;
       setActiveOfficeId(officeId);
       if (uid) {
@@ -241,7 +286,7 @@ export function AuthProvider({ children }) {
       }
       return true;
     },
-    [profile, firebaseUser?.uid]
+    [profile, firebaseUser?.uid, roleRegistry]
   );
 
   const clearActiveOffice = useCallback(() => {
@@ -260,16 +305,32 @@ export function AuthProvider({ children }) {
     (targetProfile = profile, selectedOfficeOverride) => {
       if (!targetProfile) return '/login';
       const effectiveTarget = isBootstrapSuperAdmin
-        ? { ...targetProfile, role: ROLES.super_admin.key, approvalStatus: 'approved', status: 'active' }
+        ? {
+            ...targetProfile,
+            isBootstrapSuper: true,
+            emailVerified: true,
+            approvalStatus: 'approved',
+            status: 'active'
+          }
         : targetProfile;
-      const assigned = buildAssignedOffices(effectiveTarget, officesRef.current);
-      const multi = canSelectMultipleOffices(effectiveTarget, assigned.length, permissionOverrides);
+      const assigned = buildAssignedOffices(effectiveTarget, officesRef.current, roleRegistry);
+      const multi = canSelectMultipleOffices(effectiveTarget, assigned.length, roleRegistry);
       const effectiveId =
         selectedOfficeOverride !== undefined ? selectedOfficeOverride : activeOfficeId;
-      const hasSelectedOffice = !multi || (Boolean(effectiveId) && assigned.some((item) => item.id === effectiveId));
-      return getHomePathForUser(effectiveTarget, hasSelectedOffice);
+      const hasSelectedOffice =
+        !multi || (Boolean(effectiveId) && assigned.some((item) => item.id === effectiveId));
+      const actingSelected =
+        hasSelectedOffice &&
+        effectiveId &&
+        effectiveTarget.actingOfficeId === effectiveId &&
+        effectiveTarget.actingRoleKey &&
+        roleRegistry[effectiveTarget.actingRoleKey]?.actingEligible;
+      const routeProfile = actingSelected
+        ? { ...effectiveTarget, role: effectiveTarget.actingRoleKey }
+        : effectiveTarget;
+      return getHomePathForUser(routeProfile, hasSelectedOffice, roleRegistry);
     },
-    [profile, activeOfficeId, isBootstrapSuperAdmin, permissionOverrides]
+    [profile, activeOfficeId, isBootstrapSuperAdmin, roleRegistry]
   );
 
   const computeDistrictOfficeId = useCallback((officeId) => {
@@ -282,16 +343,22 @@ export function AuthProvider({ children }) {
   }, []);
 
   const fetchPublicBootstrap = useCallback(async () => {
+    let nextRegOpen = true;
+    let nextDefaultRole = '';
     try {
       const settingsSnap = await getDoc(doc(db, 'settings', 'app'));
       if (settingsSnap.exists()) {
-        setRegistrationOpen(settingsSnap.data().registrationOpen !== false);
-      } else {
-        setRegistrationOpen(true);
+        const sData = settingsSnap.data() || {};
+        nextRegOpen = sData.registrationOpen !== false;
+        nextDefaultRole = typeof sData.defaultRole === 'string' ? sData.defaultRole.trim() : '';
       }
     } catch {
-      setRegistrationOpen(true);
+      nextRegOpen = true;
     }
+    setRegistrationOpen(nextRegOpen);
+    setDefaultRoleKey(nextDefaultRole);
+    defaultRoleKeyRef.current = nextDefaultRole;
+    setRoleRegistry(rolesRef.current, { defaultRoleKey: nextDefaultRole });
 
     try {
       const q = query(
@@ -335,7 +402,7 @@ export function AuthProvider({ children }) {
         email: raw.email || auth.currentUser?.email || '',
         name: raw.name || raw.email || auth.currentUser?.email || 'User',
         ...raw,
-        role: normalizeRole(raw.role) || raw.role
+        role: typeof raw.role === 'string' ? raw.role.trim() : ''
       };
 
       if (data.status === 'resigned') {
@@ -381,7 +448,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!profile || !offices.length) return;
     syncActiveOfficeFromSession(profile, offices, false);
-  }, [profile, offices, syncActiveOfficeFromSession]);
+  }, [profile, offices, roleRegistry, syncActiveOfficeFromSession]);
 
   useEffect(() => {
     let active = true;
@@ -420,32 +487,49 @@ export function AuthProvider({ children }) {
   }, [fetchPublicBootstrap, loadUserProfile]);
 
   useEffect(() => {
-    if (!firebaseUser) {
-      setPermissionOverrides({});
-      setPermissionOverridesState({});
-      setPermissionsMeta({ updatedAt: null, updatedByName: '' });
-      return undefined;
-    }
-    const permDocRef = doc(db, 'settings', 'permissions');
     const unsubscribe = onSnapshot(
-      permDocRef,
+      doc(db, 'settings', 'app'),
       (snap) => {
         if (snap.exists()) {
-          const data = snap.data() || {};
-          const cleaned = setPermissionOverrides(data.overrides || {});
-          setPermissionOverridesState(cleaned);
-          setPermissionsMeta({
-            updatedAt: data.updatedAt || null,
-            updatedByName: data.updatedByName || ''
-          });
-        } else {
-          setPermissionOverrides({});
-          setPermissionOverridesState({});
-          setPermissionsMeta({ updatedAt: null, updatedByName: '' });
+          const sData = snap.data() || {};
+          const nextRegOpen = sData.registrationOpen !== false;
+          const nextDefaultRole = typeof sData.defaultRole === 'string' ? sData.defaultRole.trim() : '';
+          setRegistrationOpen(nextRegOpen);
+          setDefaultRoleKey(nextDefaultRole);
+          defaultRoleKeyRef.current = nextDefaultRole;
+          setRoleRegistry(rolesRef.current, { defaultRoleKey: nextDefaultRole });
         }
       },
+      () => {
+        // Fallback handled by fetchPublicBootstrap
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseUser) {
+      rolesRef.current = [];
+      setRoles([]);
+      setRoleRegistry([], { defaultRoleKey: defaultRoleKeyRef.current });
+      setRolesLoadedUid(null);
+      return undefined;
+    }
+    const targetUid = firebaseUser.uid;
+    const unsubscribe = onSnapshot(
+      collection(db, 'roles'),
+      (snap) => {
+        const list = snap.docs
+          .map((d) => ({ key: d.id, ...d.data() }))
+          .sort((a, b) => (b.rank ?? 0) - (a.rank ?? 0) || (a.label || '').localeCompare(b.label || ''));
+        rolesRef.current = list;
+        setRoleRegistry(list, { defaultRoleKey: defaultRoleKeyRef.current });
+        setRoles(list);
+        setRolesLoadedUid(targetUid);
+      },
       (err) => {
-        console.warn('Permission config listener warning:', err?.code || err?.message);
+        console.warn('Roles listener warning:', err?.code || err?.message);
+        setRolesLoadedUid(targetUid);
       }
     );
     return () => unsubscribe();
@@ -553,9 +637,14 @@ export function AuthProvider({ children }) {
           10000,
           'Registration check timed out.'
         ).catch(() => null);
-        const open = settingsSnap && settingsSnap.exists() ? settingsSnap.data().registrationOpen !== false : true;
-        if (!open) {
-          emit('settings', 'error', 'Public registration is closed.');
+        const sData = settingsSnap && settingsSnap.exists() ? settingsSnap.data() : {};
+        const open = sData.registrationOpen !== false;
+        const resolvedDefaultRole =
+          (typeof sData.defaultRole === 'string' ? sData.defaultRole.trim() : '') ||
+          defaultRoleKeyRef.current ||
+          getDefaultRoleKey();
+        if (!open || !resolvedDefaultRole) {
+          emit('settings', 'error', 'Public registration is closed or no default role is configured.');
           throw new Error('রেজিস্ট্রেশন বন্ধ আছে');
         }
         emit('settings', 'done', 'Registration is open');
@@ -591,7 +680,7 @@ export function AuthProvider({ children }) {
           status: form.status,
           resignationDate: form.status === 'resigned' ? form.resignationDate : null,
           profilePhotoPath: '',
-          role: ROLES.employee.key,
+          role: resolvedDefaultRole,
           approvalStatus: 'pending',
           boundDeviceId: null,
           createdAt: serverTimestamp(),
@@ -669,9 +758,8 @@ export function AuthProvider({ children }) {
         emit('settings', 'running', 'Checking permissions & registration settings...');
         await withTimeout(fetchPublicBootstrap(), 12000, 'Could not load office & registration settings.');
         const uid = currentUser.uid;
-        const bootstrapAdmin =
-          currentUser.emailVerified === true &&
-          BOOTSTRAP_SUPER_ADMIN_EMAILS.includes((currentUser.email || '').toLowerCase());
+        const bootstrapAdmin = isBootstrapSuperUser(currentUser);
+        let resolvedDefaultRole = defaultRoleKeyRef.current || getDefaultRoleKey();
 
         if (!bootstrapAdmin) {
           const settingsSnap = await withTimeout(
@@ -679,13 +767,17 @@ export function AuthProvider({ children }) {
             10000,
             'Registration settings check timed out.'
           ).catch(() => null);
-          const open = settingsSnap && settingsSnap.exists() ? settingsSnap.data().registrationOpen !== false : true;
-          if (!open) {
-            emit('settings', 'error', 'Public registration is closed.');
-            throw new Error('রেজিস্ট্রেশন বন্ধ আছে। আপনার UID সুপার অ্যাডমিনকে দিন।');
+          const sData = settingsSnap && settingsSnap.exists() ? settingsSnap.data() : {};
+          const open = sData.registrationOpen !== false;
+          resolvedDefaultRole =
+            (typeof sData.defaultRole === 'string' ? sData.defaultRole.trim() : '') ||
+            resolvedDefaultRole;
+          if (!open || !resolvedDefaultRole) {
+            emit('settings', 'error', 'Public registration is closed or no default role is configured.');
+            throw new Error('রেজিস্ট্রেশন বন্ধ আছে। আপনার UID অ্যাডমিনকে দিন।');
           }
         }
-        emit('settings', 'done', bootstrapAdmin ? 'Super Admin verified' : 'Registration open');
+        emit('settings', 'done', bootstrapAdmin ? 'Bootstrap Super User verified' : 'Registration open');
 
         emit('profile', 'running', `Writing users/${uid}...`);
         const districtOfficeId = computeDistrictOfficeId(form.officeId);
@@ -702,7 +794,7 @@ export function AuthProvider({ children }) {
           status: form.status || 'active',
           resignationDate: form.status === 'resigned' ? form.resignationDate : null,
           profilePhotoPath: '',
-          role: bootstrapAdmin ? ROLES.super_admin.key : ROLES.employee.key,
+          ...(bootstrapAdmin ? {} : { role: resolvedDefaultRole }),
           approvalStatus: bootstrapAdmin ? 'approved' : 'pending',
           boundDeviceId: null,
           createdAt: serverTimestamp(),
@@ -794,8 +886,11 @@ export function AuthProvider({ children }) {
       can,
       canReview,
       permissionScope,
-      permissionOverrides,
-      permissionsMeta,
+      roles,
+      rolesReady,
+      defaultRoleKey,
+      setDefaultRoleKey,
+      roleRegistry,
       assignableRoles,
       offices,
       primaryOffice,
@@ -841,8 +936,10 @@ export function AuthProvider({ children }) {
       can,
       canReview,
       permissionScope,
-      permissionOverrides,
-      permissionsMeta,
+      roles,
+      rolesReady,
+      defaultRoleKey,
+      roleRegistry,
       assignableRoles,
       offices,
       primaryOffice,

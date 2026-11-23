@@ -25,11 +25,21 @@ import {
   toBanglaDigits
 } from '../../utils/dhakaTime.js';
 import { getHighAccuracyPosition, haversineDistanceMeters } from '../../utils/geo.js';
+import { getWorkingOfficeId } from '../../lib/permissions.js';
+
+const SOURCE_LABELS = {
+  primary: 'মূল কর্মস্থল',
+  attached: 'সংযুক্তি',
+  additional: 'অতিরিক্ত দায়িত্ব',
+  acting: 'চলতি দায়িত্ব'
+};
 
 export default function EmployeeHomePage() {
   const {
     profile,
-    userOffice: office,
+    effectiveAuthUser,
+    offices,
+    userOffice,
     deviceMismatch,
     localDeviceId,
     computeDistrictOfficeId,
@@ -39,9 +49,16 @@ export default function EmployeeHomePage() {
   const [loadingToday, setLoadingToday] = useState(true);
   const [todayRecord, setTodayRecord] = useState(null);
   const [activeFieldDuty, setActiveFieldDuty] = useState(null);
+  const [expiredExclusions, setExpiredExclusions] = useState([]);
+  const [selectedOfficeId, setSelectedOfficeId] = useState('');
+  const [userPickedOffice, setUserPickedOffice] = useState(false);
+  const [gpsMatching, setGpsMatching] = useState(false);
+  const [gpsMultiMatches, setGpsMultiMatches] = useState([]);
+  const [gpsMatchHint, setGpsMatchHint] = useState('');
   const [gpsChecking, setGpsChecking] = useState(false);
   const [cameraMode, setCameraMode] = useState(false);
   const [punchType, setPunchType] = useState('in');
+  const [pendingPunchOffice, setPendingPunchOffice] = useState(null);
   const [verifiedGps, setVerifiedGps] = useState({ lat: 0, lng: 0, accuracy: 0, distanceMeters: 0 });
   const [lastDistanceBangla, setLastDistanceBangla] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -51,6 +68,83 @@ export default function EmployeeHomePage() {
   const todayStr = useMemo(() => getTodayDhaka(), []);
   const todayDisplay = useMemo(() => formatDisplayDate(todayStr), [todayStr]);
   const isTodayFieldDuty = !!activeFieldDuty;
+
+  const officeById = useMemo(() => new Map(offices.map((o) => [o.id, o])), [offices]);
+  const getOfficeName = useCallback(
+    (id) => officeById.get(id)?.name || id || '—',
+    [officeById]
+  );
+
+  const { validOffices, expiredOfficeNames } = useMemo(() => {
+    if (!profile) return { validOffices: [], expiredOfficeNames: [] };
+
+    const expiredSet = new Set(
+      expiredExclusions.map((ex) => `${ex.kind}:${ex.officeId}`)
+    );
+    const expiredNames = [];
+    const seen = new Map();
+
+    const addEntry = (id, source, excludeKind = null) => {
+      if (!id || typeof id !== 'string') return;
+      const trimmed = id.trim();
+      if (!trimmed) return;
+      if (excludeKind && expiredSet.has(`${excludeKind}:${trimmed}`)) {
+        const name = officeById.get(trimmed)?.name || trimmed;
+        if (!expiredNames.includes(name)) expiredNames.push(name);
+        return;
+      }
+      const officeObj = officeById.get(trimmed);
+      if (!officeObj) return;
+      if (!seen.has(trimmed)) {
+        seen.set(trimmed, {
+          ...officeObj,
+          sources: [source]
+        });
+      } else {
+        const prev = seen.get(trimmed);
+        if (!prev.sources.includes(source)) {
+          prev.sources.push(source);
+        }
+      }
+    };
+
+    addEntry(profile.officeId, 'primary');
+    addEntry(profile.attachedOfficeId, 'attached', 'attachment');
+    if (Array.isArray(profile.additionalOfficeIds)) {
+      for (const addId of profile.additionalOfficeIds) {
+        addEntry(addId, 'additional', 'additional_charge');
+      }
+    }
+    if (profile.actingOfficeId) {
+      addEntry(profile.actingOfficeId, 'acting', 'acting_charge');
+    }
+
+    return {
+      validOffices: Array.from(seen.values()),
+      expiredOfficeNames: expiredNames
+    };
+  }, [profile, expiredExclusions, officeById]);
+
+  useEffect(() => {
+    if (validOffices.length === 0) {
+      setSelectedOfficeId('');
+      return;
+    }
+    if (selectedOfficeId && validOffices.some((o) => o.id === selectedOfficeId)) {
+      return;
+    }
+    const preferredWorking = getWorkingOfficeId(effectiveAuthUser);
+    const initialChoice =
+      (todayRecord?.officeId && validOffices.find((o) => o.id === todayRecord.officeId)?.id) ||
+      (preferredWorking && validOffices.find((o) => o.id === preferredWorking)?.id) ||
+      validOffices[0].id;
+    setSelectedOfficeId(initialChoice);
+  }, [validOffices, selectedOfficeId, todayRecord?.officeId, effectiveAuthUser]);
+
+  const office = useMemo(
+    () => validOffices.find((o) => o.id === selectedOfficeId) || validOffices[0] || userOffice || null,
+    [validOffices, selectedOfficeId, userOffice]
+  );
 
   const verifyLiveUserAndDevice = useCallback(async () => {
     if (!profile?.uid) {
@@ -111,18 +205,32 @@ export default function EmployeeHomePage() {
     }
 
     try {
-      const fdQ = query(
-        collection(db, 'fieldDuties'),
-        where('uid', '==', profile.uid),
-        where('status', '==', 'approved')
-      );
-      const fdSnap = await getDocs(fdQ);
+      const [fdSnap, assignSnap] = await Promise.all([
+        getDocs(
+          query(
+            collection(db, 'fieldDuties'),
+            where('uid', '==', profile.uid),
+            where('status', '==', 'approved')
+          )
+        ),
+        getDocs(collection(db, 'users', profile.uid, 'assignments')).catch(() => null)
+      ]);
       const found = fdSnap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
         .find((fd) => fd.startDate <= todayStr && fd.endDate >= todayStr);
       setActiveFieldDuty(found || null);
+
+      if (assignSnap) {
+        const expired = assignSnap.docs
+          .map((d) => d.data())
+          .filter((r) => !r.closedAt && r.endDate && r.endDate < todayStr)
+          .map((r) => ({ kind: r.kind, officeId: r.officeId }));
+        setExpiredExclusions(expired);
+      } else {
+        setExpiredExclusions([]);
+      }
     } catch (err) {
-      console.warn('Field duty fetch notice:', err);
+      console.warn('Field duty / assignments fetch notice:', err);
     } finally {
       setLoadingToday(false);
     }
@@ -132,10 +240,65 @@ export default function EmployeeHomePage() {
     loadTodayData();
   }, [loadTodayData]);
 
-  const startPunchFlow = async (type) => {
+  const computeMatchesForFix = useCallback(
+    (lat, lng) => {
+      const matched = [];
+      for (const candidate of validOffices) {
+        const cLat = Number(candidate.lat);
+        const cLng = Number(candidate.lng);
+        if (!Number.isFinite(cLat) || !Number.isFinite(cLng)) continue;
+        const dist = haversineDistanceMeters(lat, lng, cLat, cLng);
+        if (!Number.isFinite(dist) || dist < 0) continue;
+        const radius = Number(candidate.geofenceRadiusMeters || 100);
+        if (dist <= radius) {
+          matched.push({ office: candidate, distance: dist, radius });
+        }
+      }
+      return matched.sort((a, b) => a.distance - b.distance);
+    },
+    [validOffices]
+  );
+
+  const handleAutoDetectOffice = async () => {
+    if (validOffices.length <= 1 || gpsMatching) return;
+    setActionError('');
+    setGpsMatchHint('');
+    setGpsMultiMatches([]);
+    setGpsMatching(true);
+    try {
+      const pos = await getHighAccuracyPosition();
+      if (!Number.isFinite(pos.lat) || !Number.isFinite(pos.lng)) {
+        setGpsMatchHint('GPS স্থানাঙ্ক পাওয়া যায়নি।');
+        return;
+      }
+      const matches = computeMatchesForFix(pos.lat, pos.lng);
+      if (matches.length === 1) {
+        setSelectedOfficeId(matches[0].office.id);
+        setUserPickedOffice(true);
+        setGpsMatchHint(
+          `GPS অনুযায়ী "${matches[0].office.name}" শনাক্ত হয়েছে (দূরত্ব: ${toBanglaDigits(matches[0].distance)} মিটার)।`
+        );
+      } else if (matches.length > 1) {
+        setGpsMultiMatches(matches);
+        setUserPickedOffice(false);
+        setGpsMatchHint(
+          `${toBanglaDigits(matches.length)}টি অফিস আপনার বর্তমান অবস্থানের সীমানার মধ্যে রয়েছে। নিচ থেকে একটি নির্বাচন করুন।`
+        );
+      } else {
+        setGpsMatchHint('কোনো অফিসের জিওফেন্স সীমানার মধ্যে অবস্থান শনাক্ত হয়নি। তালিকা থেকে অফিস নির্বাচন করুন।');
+      }
+    } catch (err) {
+      setActionError(err.message || 'GPS অবস্থান শনাক্ত করা যায়নি।');
+    } finally {
+      setGpsMatching(false);
+    }
+  };
+
+  const startPunchFlow = async (type, forcedOffice = null) => {
     setActionError('');
     setActionSuccess('');
     setLastDistanceBangla('');
+    setGpsMultiMatches([]);
 
     if (!navigator.onLine) {
       setActionError('ইন্টারনেট সংযোগ নেই। অনলাইনে যুক্ত হয়ে পুনরায় চেষ্টা করুন।');
@@ -149,15 +312,10 @@ export default function EmployeeHomePage() {
       setActionError('একই দিনে আগে হাজিরা না দিয়ে প্রস্থান দেওয়া যাবে না।');
       return;
     }
-    if (!office) {
-      setActionError('আপনার অফিসের তথ্য পাওয়া যায়নি।');
-      return;
-    }
 
-    const officeLat = Number(office.lat);
-    const officeLng = Number(office.lng);
-    if (!Number.isFinite(officeLat) || !Number.isFinite(officeLng)) {
-      setActionError('আপনার অফিসের GPS স্থানাঙ্ক সঠিক নয়। সুপার অ্যাডমিনকে অফিসের লোকেশন আপডেট করতে বলুন।');
+    let targetOffice = forcedOffice || office;
+    if (!targetOffice) {
+      setActionError('আপনার অফিসের তথ্য পাওয়া যায়নি।');
       return;
     }
 
@@ -181,23 +339,49 @@ export default function EmployeeHomePage() {
         return;
       }
 
+      // If multiple valid offices and user didn't explicitly lock an office choice, auto-match geofence
+      if (!forcedOffice && !userPickedOffice && validOffices.length > 1) {
+        const matches = computeMatchesForFix(pos.lat, pos.lng);
+        if (matches.length === 1) {
+          targetOffice = matches[0].office;
+          setSelectedOfficeId(targetOffice.id);
+          setGpsMatchHint(
+            `GPS অনুযায়ী "${targetOffice.name}" স্বয়ংক্রিয়ভাবে নির্বাচিত হয়েছে।`
+          );
+        } else if (matches.length > 1) {
+          setGpsMultiMatches(matches);
+          setGpsMatchHint(
+            `${toBanglaDigits(matches.length)}টি অফিসের জিওফেন্স মিলেছে। কোন অফিসে ${type === 'in' ? 'হাজিরা' : 'প্রস্থান'} দেবেন তা নির্বাচন করুন।`
+          );
+          return;
+        }
+      }
+
+      const officeLat = Number(targetOffice.lat);
+      const officeLng = Number(targetOffice.lng);
+      if (!Number.isFinite(officeLat) || !Number.isFinite(officeLng)) {
+        setActionError('নির্বাচিত অফিসের GPS স্থানাঙ্ক সঠিক নয়। সুপার অ্যাডমিনকে অফিসের লোকেশন আপডেট করতে বলুন।');
+        return;
+      }
+
       const distance = haversineDistanceMeters(pos.lat, pos.lng, officeLat, officeLng);
       if (!Number.isFinite(distance) || distance < 0) {
         setActionError('অফিস থেকে দূরত্ব নির্ণয় করা যায়নি। পুনরায় চেষ্টা করুন।');
         return;
       }
-      const radius = Number(office.geofenceRadiusMeters || 100);
+      const radius = Number(targetOffice.geofenceRadiusMeters || 100);
       setLastDistanceBangla(
-        `অফিস থেকে দূরত্ব: ${toBanglaDigits(distance)} মিটার (নির্ভুলতা ±${toBanglaDigits(pos.accuracy)} মিটার)`
+        `${targetOffice.name} থেকে দূরত্ব: ${toBanglaDigits(distance)} মিটার (নির্ভুলতা ±${toBanglaDigits(pos.accuracy)} মিটার)`
       );
 
       if (!isTodayFieldDuty && distance > radius) {
         setActionError(
-          `আপনি অফিসের নির্ধারিত সীমানার (${toBanglaDigits(radius)} মিটার) বাইরে আছেন। বর্তমান দূরত্ব: ${toBanglaDigits(distance)} মিটার।`
+          `আপনি "${targetOffice.name}"-এর নির্ধারিত সীমানার (${toBanglaDigits(radius)} মিটার) বাইরে আছেন। বর্তমান দূরত্ব: ${toBanglaDigits(distance)} মিটার।`
         );
         return;
       }
 
+      setPendingPunchOffice(targetOffice);
       setVerifiedGps({
         lat: pos.lat,
         lng: pos.lng,
@@ -250,6 +434,12 @@ export default function EmployeeHomePage() {
         photoDeleted: photoUnavailable
       };
 
+      const punchTargetOffice = pendingPunchOffice || office;
+      if (!punchTargetOffice) {
+        setActionError('নির্বাচিত অফিসের তথ্য পাওয়া যায়নি।');
+        return;
+      }
+
       if (punchType === 'in') {
         const existingSnap = await getDoc(doc(db, 'attendance', docId)).catch(() => null);
         if (existingSnap && existingSnap.exists()) {
@@ -258,17 +448,27 @@ export default function EmployeeHomePage() {
           return;
         }
 
-        const initialStatus = computeInitialStatus(new Date(), office.startTime, office.graceMinutes);
+        const initialStatus = computeInitialStatus(
+          new Date(),
+          punchTargetOffice.startTime,
+          punchTargetOffice.graceMinutes
+        );
         const employeeName = String(profile.name || profile.email || 'User').trim().slice(0, 120) || 'User';
         const designation = String(profile.designation || '').trim().slice(0, 120);
-        const districtOfficeId = String(profile.districtOfficeId || computeDistrictOfficeId(office.id) || '').slice(0, 128);
+        const targetDistrictId = String(computeDistrictOfficeId(punchTargetOffice.id) || '').slice(0, 128);
+        const homeOfficeId = String(profile.officeId || '').slice(0, 128);
+        const homeDistrictOfficeId = String(
+          profile.districtOfficeId || computeDistrictOfficeId(homeOfficeId) || ''
+        ).slice(0, 128);
 
         const payload = {
           uid,
           employeeName,
           designation,
-          officeId: office.id,
-          districtOfficeId,
+          officeId: punchTargetOffice.id,
+          districtOfficeId: targetDistrictId,
+          homeOfficeId,
+          homeDistrictOfficeId,
           date: todayStr,
           isFieldDuty: isTodayFieldDuty,
           checkIn: punchObj,
@@ -293,13 +493,18 @@ export default function EmployeeHomePage() {
         }
         setActionSuccess(
           photoUnavailable
-            ? `আজকের হাজিরা সংরক্ষিত হয়েছে (${initialStatus}), তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।`
-            : `আজকের হাজিরা সফলভাবে সংরক্ষিত হয়েছে (${initialStatus})।`
+            ? `${punchTargetOffice.name}-এ আজকের হাজিরা সংরক্ষিত হয়েছে (${initialStatus}), তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।`
+            : `${punchTargetOffice.name}-এ আজকের হাজিরা সফলভাবে সংরক্ষিত হয়েছে (${initialStatus})।`
         );
       } else {
+        const checkOutDistrictOfficeId = String(
+          computeDistrictOfficeId(punchTargetOffice.id) || ''
+        ).slice(0, 128);
         try {
           await updateDoc(doc(db, 'attendance', docId), {
             checkOut: punchObj,
+            checkOutOfficeId: punchTargetOffice.id,
+            checkOutDistrictOfficeId,
             updatedAt: serverTimestamp()
           });
         } catch (err) {
@@ -307,11 +512,13 @@ export default function EmployeeHomePage() {
         }
         setActionSuccess(
           photoUnavailable
-            ? 'আজকের প্রস্থান সংরক্ষিত হয়েছে, তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।'
-            : 'আজকের প্রস্থান সফলভাবে সংরক্ষিত হয়েছে।'
+            ? `${punchTargetOffice.name}-এ আজকের প্রস্থান সংরক্ষিত হয়েছে, তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।`
+            : `${punchTargetOffice.name}-এ আজকের প্রস্থান সফলভাবে সংরক্ষিত হয়েছে।`
         );
       }
 
+      setPendingPunchOffice(null);
+      setUserPickedOffice(false);
       await loadTodayData();
     } catch (err) {
       setActionError(err.message || 'হাজিরা সংরক্ষণ করা যায়নি।');
@@ -329,6 +536,12 @@ export default function EmployeeHomePage() {
             <p className="text-xs text-rose-800 leading-relaxed">
               এই অ্যাকাউন্টটি অন্য একটি ডিভাইসের সাথে যুক্ত (Bound) আছে। নতুন ডিভাইস থেকে হাজিরা দিতে হলে সুপার অ্যাডমিনকে ডিভাইস রিসেট করতে হবে।
             </p>
+          </div>
+        )}
+
+        {expiredOfficeNames.length > 0 && (
+          <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+            দ্রষ্টব্য: {expiredOfficeNames.join(', ')}-এ আপনার নির্ধারিত দায়িত্ব বা সংযুক্তির মেয়াদ শেষ হওয়ায় তালিকা থেকে বাদ দেওয়া হয়েছে। অনুগ্রহ করে প্রশাসকের সাথে যোগাযোগ করুন।
           </div>
         )}
 
@@ -354,6 +567,66 @@ export default function EmployeeHomePage() {
             )}
           </div>
 
+          {validOffices.length > 1 && (!todayRecord?.checkIn || !todayRecord?.checkOut) && (
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label
+                  htmlFor="attendance-office-select"
+                  className="text-xs font-semibold text-slate-700"
+                >
+                  {todayRecord?.checkIn
+                    ? 'প্রস্থানের অফিস নির্বাচন করুন (Check-Out Office)'
+                    : 'হাজিরার অফিস নির্বাচন করুন (Check-In Office)'}
+                </label>
+                <button
+                  type="button"
+                  disabled={gpsMatching}
+                  onClick={handleAutoDetectOffice}
+                  className="text-xs font-semibold text-[#0b6b4f] hover:underline disabled:opacity-50"
+                >
+                  {gpsMatching ? 'শনাক্ত হচ্ছে...' : 'GPS দিয়ে নিকটতম অফিস খুঁজুন'}
+                </button>
+              </div>
+              <select
+                id="attendance-office-select"
+                value={selectedOfficeId}
+                onChange={(e) => {
+                  setSelectedOfficeId(e.target.value);
+                  setUserPickedOffice(true);
+                  setGpsMultiMatches([]);
+                }}
+                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm text-slate-900"
+              >
+                {validOffices.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name} ({o.sources.map((s) => SOURCE_LABELS[s] || s).join(', ')})
+                  </option>
+                ))}
+              </select>
+              {gpsMatchHint && (
+                <div className="text-xs text-emerald-800">{gpsMatchHint}</div>
+              )}
+              {gpsMultiMatches.length > 1 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {gpsMultiMatches.map((m) => (
+                    <button
+                      key={m.office.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedOfficeId(m.office.id);
+                        setUserPickedOffice(true);
+                        startPunchFlow(todayRecord?.checkIn ? 'out' : 'in', m.office);
+                      }}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] text-white text-xs font-semibold"
+                    >
+                      {m.office.name} ({toBanglaDigits(m.distance)} মি.)
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {isTodayFieldDuty && (
             <div className="p-3 rounded-xl bg-sky-50 border border-sky-200 text-xs text-sky-900">
               Approved Field Duty active today ({activeFieldDuty.location}). Geofence check is bypassed, GPS &amp; selfie still required.
@@ -363,17 +636,22 @@ export default function EmployeeHomePage() {
           {loadingToday ? (
             <div className="py-4 text-sm text-slate-500">লোড হচ্ছে...</div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
               <div className="p-3.5 rounded-xl bg-slate-50">
                 <div className="text-xs text-slate-500">Check-In (হাজিরা)</div>
                 <div className="text-base font-bold font-mono-tabular text-slate-900 mt-1">
                   {todayRecord?.checkIn ? formatDhakaTime(todayRecord.checkIn.time) : '—'}
                 </div>
                 {todayRecord?.checkIn && (
-                  <div className="text-[11px] text-slate-500 mt-1 font-mono-tabular">
-                    দূরত্ব: {toBanglaDigits(todayRecord.checkIn.distanceMeters ?? 0)} মিটার · ±
-                    {todayRecord.checkIn.accuracy}m
-                  </div>
+                  <>
+                    <div className="text-[11px] font-medium text-slate-700 mt-1 truncate">
+                      অফিস: {getOfficeName(todayRecord.officeId)}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 font-mono-tabular">
+                      দূরত্ব: {toBanglaDigits(todayRecord.checkIn.distanceMeters ?? 0)} মিটার · ±
+                      {todayRecord.checkIn.accuracy}m
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -383,10 +661,15 @@ export default function EmployeeHomePage() {
                   {todayRecord?.checkOut ? formatDhakaTime(todayRecord.checkOut.time) : '—'}
                 </div>
                 {todayRecord?.checkOut && (
-                  <div className="text-[11px] text-slate-500 mt-1 font-mono-tabular">
-                    দূরত্ব: {toBanglaDigits(todayRecord.checkOut.distanceMeters ?? 0)} মিটার · ±
-                    {todayRecord.checkOut.accuracy}m
-                  </div>
+                  <>
+                    <div className="text-[11px] font-medium text-slate-700 mt-1 truncate">
+                      অফিস: {getOfficeName(todayRecord.checkOutOfficeId || todayRecord.officeId)}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 font-mono-tabular">
+                      দূরত্ব: {toBanglaDigits(todayRecord.checkOut.distanceMeters ?? 0)} মিটার · ±
+                      {todayRecord.checkOut.accuracy}m
+                    </div>
+                  </>
                 )}
               </div>
             </div>

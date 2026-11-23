@@ -68,23 +68,60 @@ export default function DistrictReportsPage() {
       const office = managedOffices.find((o) => o.id === selectedOfficeId);
       if (!office) return;
 
-      const [uSnap, aSnap] = await Promise.all([
-        getDocs(query(collection(db, 'users'), where('officeId', '==', office.id))),
+      const isOwnOffice = office.id === myOfficeId;
+      const [uSnap, aSnap, aHomeSnap] = await Promise.all([
         getDocs(
-          query(
-            collection(db, 'attendance'),
-            where('officeId', '==', office.id),
-            where('settled', '==', true)
-          )
+          isOwnOffice
+            ? query(collection(db, 'users'), where('officeId', '==', office.id))
+            : query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId))
+        ),
+        getDocs(
+          isOwnOffice
+            ? query(
+                collection(db, 'attendance'),
+                where('officeId', '==', office.id),
+                where('settled', '==', true)
+              )
+            : query(
+                collection(db, 'attendance'),
+                where('districtOfficeId', '==', myOfficeId),
+                where('settled', '==', true)
+              )
+        ),
+        getDocs(
+          isOwnOffice
+            ? query(
+                collection(db, 'attendance'),
+                where('homeOfficeId', '==', office.id),
+                where('settled', '==', true)
+              )
+            : query(
+                collection(db, 'attendance'),
+                where('homeDistrictOfficeId', '==', myOfficeId),
+                where('settled', '==', true)
+              )
         )
       ]);
 
       const employees = uSnap.docs
         .map((d) => ({ uid: d.id, id: d.id, ...d.data() }))
-        .filter((u) => u.approvalStatus === 'approved');
+        .filter((u) => u.approvalStatus === 'approved' && (isOwnOffice || u.officeId === office.id));
       const settledRecords = aSnap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((r) => r.date && r.date.startsWith(selectedMonth));
+        .filter((r) => r.date && r.date.startsWith(selectedMonth) && (isOwnOffice || r.officeId === office.id));
+      const otherOfficeRecords = aHomeSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter(
+          (r) =>
+            r.date &&
+            r.date.startsWith(selectedMonth) &&
+            (isOwnOffice ? r.officeId !== office.id : r.homeOfficeId === office.id && r.officeId !== office.id)
+        );
+
+      const otherDaysByUid = new Map();
+      for (const rec of otherOfficeRecords) {
+        otherDaysByUid.set(rec.uid, (otherDaysByUid.get(rec.uid) || 0) + 1);
+      }
 
       const rowsMap = new Map();
       for (const emp of employees) {
@@ -96,7 +133,8 @@ export default function DistrictReportsPage() {
           onTime: 0,
           late: 0,
           leave: 0,
-          absent: 0
+          absent: 0,
+          otherOfficeDays: otherDaysByUid.get(empUid) || 0
         });
       }
 
@@ -111,7 +149,8 @@ export default function DistrictReportsPage() {
             onTime: 0,
             late: 0,
             leave: 0,
-            absent: 0
+            absent: 0,
+            otherOfficeDays: 0
           });
         }
         const row = rowsMap.get(rec.uid);
@@ -198,10 +237,17 @@ export default function DistrictReportsPage() {
                 className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
                   activeChargeType === 'additional'
                     ? 'bg-amber-100 text-amber-800'
+                    : activeChargeType === 'acting'
+                    ? 'bg-sky-100 text-sky-800'
                     : 'bg-emerald-100 text-emerald-800'
                 }`}
               >
-                {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'} · {activeOffice.name}
+                {activeChargeType === 'additional'
+                  ? 'অতিরিক্ত দায়িত্ব'
+                  : activeChargeType === 'acting'
+                  ? 'চলতি দায়িত্ব'
+                  : 'মূল দায়িত্ব'}{' '}
+                · {activeOffice.name}
               </span>
             )}
           </div>
@@ -300,6 +346,11 @@ export default function DistrictReportsPage() {
                       <td className="py-2.5 pr-3">
                         <div className="font-semibold text-slate-900">{row.name}</div>
                         <div className="text-[11px] text-slate-500">{row.designation}</div>
+                        {Number(row.otherOfficeDays) > 0 && (
+                          <div className="text-[11px] text-sky-700">
+                            অন্য অফিসে হাজিরা: {row.otherOfficeDays} দিন
+                          </div>
+                        )}
                       </td>
                       <td className="py-2.5 px-2 text-right font-mono-tabular text-emerald-700">{row.onTime}</td>
                       <td className="py-2.5 px-2 text-right font-mono-tabular text-amber-700">{row.late}</td>

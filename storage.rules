@@ -7,159 +7,324 @@ service firebase.storage {
       allow read, write: if false;
     }
 
+    // =========================================================
+    // Dynamic Role Helpers (mirrors firestore.rules, zero role literals)
+    // =========================================================
+
+    // Checks whether the request has a signed-in Firebase Auth user.
     function isSignedIn() {
       return request.auth != null;
     }
 
-    // Adjust database ID if using (default) in your own Firebase project
-    function callerDoc() {
-      return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(request.auth.uid));
+    // Identifies the bootstrap super user strictly by verified Firebase Auth email.
+    function isBootstrapSuperUser() {
+      return isSignedIn()
+        && request.auth.token.email in ['absiddik5177@gmail.com', 'absiddik517@gmail.com']
+        && request.auth.token.email_verified == true;
     }
 
+    // Checks whether the caller's user document exists in Firestore.
     function callerExists() {
       return isSignedIn()
         && firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(request.auth.uid));
     }
 
+    // Reads the caller's user document from Firestore.
+    function callerDoc() {
+      return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Checks whether the caller is approved and active.
     function isApprovedActive() {
       return callerExists()
-        && callerDoc().data.approvalStatus == 'approved'
-        && callerDoc().data.status == 'active';
+        && callerDoc().approvalStatus == 'approved'
+        && callerDoc().status == 'active';
     }
 
-    // MIGRATION_COMPAT: legacy role mapping removed only after running scripts/migrate-roles.mjs
-    function normalizeRole(r) {
-      return r == 'head_office' ? 'director_general'
-        : (r == 'district_officer' ? 'assistant_director'
-        : (r == 'office_head' ? 'unfeo' : r));
+    // Reads the caller's role key from their approved, active user profile.
+    function callerRoleKey() {
+      return isApprovedActive()
+        && 'role' in callerDoc()
+        && callerDoc().role is string
+        && callerDoc().role != ''
+        ? callerDoc().role
+        : '';
     }
 
-    function callerRole() {
-      return (isSignedIn()
-        && request.auth.token.email in ['absiddik5177@gmail.com', 'absiddik517@gmail.com']
-        && request.auth.token.email_verified == true)
-        ? 'super_admin'
-        : (isApprovedActive() ? normalizeRole(callerDoc().data.role) : '');
+    // Checks whether a role document exists in Firestore.
+    function roleDocExists(rKey) {
+      return rKey is string
+        && rKey != ''
+        && firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/roles/$(rKey));
     }
 
-    function permOverrideExists() {
-      return firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/settings/permissions);
+    // Reads a role document's data from Firestore.
+    function roleDocData(rKey) {
+      return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/roles/$(rKey)).data;
     }
 
-    function permOverrideData() {
-      return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/settings/permissions).data;
+    // Lists implicit administrative permissions held by the bootstrap super user identity.
+    function isBootstrapImplicitPerm(perm) {
+      return perm in ['user.view', 'user.create', 'user.edit', 'attendance.photo.purge'];
     }
 
-    function hasOverrideScope(roleKey, perm) {
-      return roleKey != ''
-        && permOverrideExists()
-        && 'overrides' in permOverrideData()
-        && permOverrideData().overrides is map
-        && roleKey in permOverrideData().overrides
-        && permOverrideData().overrides[roleKey] is map
-        && perm in permOverrideData().overrides[roleKey]
-        && permOverrideData().overrides[roleKey][perm] is string;
+    // Lists permissions an acting role may contribute in Storage rules.
+    function isActingAllowedPerm(perm) {
+      return perm in ['attendance.photo.view', 'user.view'];
     }
 
-    function defaultStoragePermScope(perm) {
-      return perm == 'attendance.checkin'
-          ? (callerRole() in ['employee', 'unfeo', 'assistant_director', 'director_general', 'head_office_officer'] ? 'self' : '')
-        : (perm == 'attendance.photo.view'
-          ? (callerRole() == 'super_admin' ? 'all'
-            : (callerRole() == 'assistant_director' ? 'subtree'
-            : (callerRole() == 'unfeo' ? 'office' : '')))
-        : (perm == 'attendance.photo.purge'
-          ? (callerRole() == 'super_admin' ? 'all' : '')
-        : (perm == 'attendance.settle'
-          ? (callerRole() == 'assistant_director' ? 'subtree' : '')
-        : (perm == 'user.edit'
-          ? (callerRole() == 'super_admin' ? 'all'
-            : (callerRole() == 'assistant_director' ? 'subtree' : ''))
-        : ''))));
+    // Reads a permission scope from a specific role document.
+    function rolePermScope(rKey, perm) {
+      return roleDocExists(rKey)
+        && 'permissions' in roleDocData(rKey)
+        && roleDocData(rKey).permissions is map
+        && perm in roleDocData(rKey).permissions
+        && roleDocData(rKey).permissions[perm] in ['self', 'office', 'subtree', 'all']
+        ? roleDocData(rKey).permissions[perm]
+        : '';
     }
 
-    function storagePermScope(perm) {
-      return hasOverrideScope(callerRole(), perm)
-        ? (permOverrideData().overrides[callerRole()][perm] == 'none' ? '' : permOverrideData().overrides[callerRole()][perm])
-        : defaultStoragePermScope(perm);
+    // Resolves the caller's own Storage permission scope.
+    function ownPermScope(perm) {
+      return (isBootstrapSuperUser() && isBootstrapImplicitPerm(perm))
+        ? 'all'
+        : rolePermScope(callerRoleKey(), perm);
     }
 
-    function isSuperAdminEditor() {
-      return storagePermScope('user.edit') == 'all';
+    // Checks whether the caller holds a valid, acting-eligible acting charge.
+    function hasValidActingCharge() {
+      return isApprovedActive()
+        && 'actingOfficeId' in callerDoc()
+        && callerDoc().actingOfficeId is string
+        && callerDoc().actingOfficeId != ''
+        && 'actingRoleKey' in callerDoc()
+        && callerDoc().actingRoleKey is string
+        && callerDoc().actingRoleKey != ''
+        && roleDocExists(callerDoc().actingRoleKey)
+        && 'actingEligible' in roleDocData(callerDoc().actingRoleKey)
+        && roleDocData(callerDoc().actingRoleKey).actingEligible == true;
     }
 
-    function isCallerOfficeInScope(val) {
+    // Resolves the caller's acting role permission scope ('office' or 'subtree' only).
+    function actingPermScope(perm) {
+      return hasValidActingCharge()
+        && isActingAllowedPerm(perm)
+        && rolePermScope(callerDoc().actingRoleKey, perm) in ['office', 'subtree']
+        ? rolePermScope(callerDoc().actingRoleKey, perm)
+        : '';
+    }
+
+    // Checks whether an office ID belongs to A(caller) = officeId union additionalOfficeIds.
+    function isCallerAuthorityOffice(val) {
       return val is string
         && val != ''
+        && isApprovedActive()
         && (
-          val == callerDoc().data.officeId
+          ('officeId' in callerDoc() && val == callerDoc().officeId)
           || (
-            'additionalOfficeIds' in callerDoc().data
-            && callerDoc().data.additionalOfficeIds is list
-            && val in callerDoc().data.additionalOfficeIds
+            'additionalOfficeIds' in callerDoc()
+            && callerDoc().additionalOfficeIds is list
+            && val in callerDoc().additionalOfficeIds
           )
         );
     }
 
+    // Checks whether a user's additionalOfficeIds overlaps with A(caller).
+    function listOverlapsAuthorityOffices(arr) {
+      return arr is list
+        && arr.size() > 0
+        && isApprovedActive()
+        && (
+          ('officeId' in callerDoc() && callerDoc().officeId is string && callerDoc().officeId != '' && callerDoc().officeId in arr)
+          || (
+            'additionalOfficeIds' in callerDoc()
+            && callerDoc().additionalOfficeIds is list
+            && callerDoc().additionalOfficeIds.size() > 0
+            && arr.hasAny(callerDoc().additionalOfficeIds)
+          )
+        );
+    }
+
+    // Checks whether a target user document exists in Firestore.
     function targetUserExists(uid) {
       return firestore.exists(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid));
     }
 
+    // Reads a target user document's data from Firestore.
     function targetUserDoc(uid) {
       return firestore.get(/databases/ai-studio-6b59576b-9eb4-4341-b9bd-1bed0ff2719e/documents/users/$(uid)).data;
     }
 
-    function targetInOfficeScope(uid) {
-      return targetUserExists(uid)
-        && 'officeId' in targetUserDoc(uid)
-        && isCallerOfficeInScope(targetUserDoc(uid).officeId);
+    // Checks whether any office in target V(U) matches A(caller) for office scope.
+    function targetVOfficesMatchAuthority(uData) {
+      return ('officeId' in uData && isCallerAuthorityOffice(uData.officeId))
+        || ('attachedOfficeId' in uData && isCallerAuthorityOffice(uData.attachedOfficeId))
+        || ('actingOfficeId' in uData && isCallerAuthorityOffice(uData.actingOfficeId))
+        || ('additionalOfficeIds' in uData && listOverlapsAuthorityOffices(uData.additionalOfficeIds));
     }
 
-    function targetInSubtreeScope(uid) {
+    // Checks whether target user matches A(caller) under 'office' or 'subtree' scope.
+    function targetMatchesAuthorityScope(uid, scope) {
       return targetUserExists(uid)
         && (
-          ('officeId' in targetUserDoc(uid) && isCallerOfficeInScope(targetUserDoc(uid).officeId))
-          || ('districtOfficeId' in targetUserDoc(uid) && isCallerOfficeInScope(targetUserDoc(uid).districtOfficeId))
+          (scope == 'office' && targetVOfficesMatchAuthority(targetUserDoc(uid)))
+          || (
+            scope == 'subtree'
+            && (
+              targetVOfficesMatchAuthority(targetUserDoc(uid))
+              || ('districtOfficeId' in targetUserDoc(uid) && isCallerAuthorityOffice(targetUserDoc(uid).districtOfficeId))
+            )
+          )
         );
     }
 
+    // Checks whether target user matches the caller's actingOfficeId under 'office' or 'subtree'.
+    function targetMatchesActingScope(uid, scope) {
+      return hasValidActingCharge()
+        && targetUserExists(uid)
+        && (
+          (
+            scope in ['office', 'subtree']
+            && (
+              ('officeId' in targetUserDoc(uid) && targetUserDoc(uid).officeId == callerDoc().actingOfficeId)
+              || ('attachedOfficeId' in targetUserDoc(uid) && targetUserDoc(uid).attachedOfficeId == callerDoc().actingOfficeId)
+              || ('actingOfficeId' in targetUserDoc(uid) && targetUserDoc(uid).actingOfficeId == callerDoc().actingOfficeId)
+              || (
+                'additionalOfficeIds' in targetUserDoc(uid)
+                && targetUserDoc(uid).additionalOfficeIds is list
+                && callerDoc().actingOfficeId in targetUserDoc(uid).additionalOfficeIds
+              )
+            )
+          )
+          || (
+            scope == 'subtree'
+            && 'districtOfficeId' in targetUserDoc(uid)
+            && targetUserDoc(uid).districtOfficeId == callerDoc().actingOfficeId
+          )
+        );
+    }
+
+    // Reads a role's review.settle scope for a target user's role key.
+    function settleReviewScope(rKey, targetRoleKey) {
+      return roleDocExists(rKey)
+        && targetRoleKey is string
+        && targetRoleKey != ''
+        && 'review' in roleDocData(rKey)
+        && roleDocData(rKey).review is map
+        && 'settle' in roleDocData(rKey).review
+        && roleDocData(rKey).review.settle is map
+        && targetRoleKey in roleDocData(rKey).review.settle
+        && roleDocData(rKey).review.settle[targetRoleKey] in ['office', 'subtree', 'all']
+        ? roleDocData(rKey).review.settle[targetRoleKey]
+        : '';
+    }
+
+    // Checks attendance photo view authorization (own or acting scope).
     function canViewAttendancePhoto(uid) {
-      return storagePermScope('attendance.photo.view') == 'all'
-        || (storagePermScope('attendance.photo.view') == 'subtree' && targetInSubtreeScope(uid))
-        || (storagePermScope('attendance.photo.view') == 'office' && targetInOfficeScope(uid));
+      return ownPermScope('attendance.photo.view') == 'all'
+        || (
+          ownPermScope('attendance.photo.view') in ['office', 'subtree']
+          && targetMatchesAuthorityScope(uid, ownPermScope('attendance.photo.view'))
+        )
+        || (
+          actingPermScope('attendance.photo.view') in ['office', 'subtree']
+          && targetMatchesActingScope(uid, actingPermScope('attendance.photo.view'))
+        );
     }
 
+    // Checks attendance photo deletion authorization (photo.purge or review.settle, never self).
     function canDeleteAttendancePhoto(uid) {
-      return storagePermScope('attendance.photo.purge') == 'all'
-        || storagePermScope('attendance.settle') == 'all'
-        || (storagePermScope('attendance.settle') == 'subtree' && targetInSubtreeScope(uid))
-        || (storagePermScope('attendance.settle') == 'office' && targetInOfficeScope(uid));
+      return ownPermScope('attendance.photo.purge') == 'all'
+        || (
+          request.auth.uid != uid
+          && targetUserExists(uid)
+          && 'role' in targetUserDoc(uid)
+          && (
+            settleReviewScope(callerRoleKey(), targetUserDoc(uid).role) == 'all'
+            || (
+              settleReviewScope(callerRoleKey(), targetUserDoc(uid).role) in ['office', 'subtree']
+              && targetMatchesAuthorityScope(uid, settleReviewScope(callerRoleKey(), targetUserDoc(uid).role))
+            )
+            || (
+              hasValidActingCharge()
+              && settleReviewScope(callerDoc().actingRoleKey, targetUserDoc(uid).role) in ['office', 'subtree']
+              && targetMatchesActingScope(uid, settleReviewScope(callerDoc().actingRoleKey, targetUserDoc(uid).role))
+            )
+          )
+        );
     }
 
-    // Permanent profile photos: writable only by owner or user.edit (all); readable by signed-in staff
+    // Checks user.view authorization for reading office orders under orders/{uid}/{fileName}.
+    function canViewTargetUserOrders(uid) {
+      return ownPermScope('user.view') == 'all'
+        || (
+          ownPermScope('user.view') in ['office', 'subtree']
+          && targetMatchesAuthorityScope(uid, ownPermScope('user.view'))
+        )
+        || (
+          actingPermScope('user.view') in ['office', 'subtree']
+          && targetMatchesActingScope(uid, actingPermScope('user.view'))
+        );
+    }
+
+    // Checks assignment.manage / user.edit / user.create authorization for uploading orders.
+    function canWriteTargetUserOrders(uid) {
+      return ownPermScope('assignment.manage') == 'all'
+        || ownPermScope('user.edit') == 'all'
+        || ownPermScope('user.create') == 'all'
+        || (
+          ownPermScope('assignment.manage') == 'subtree'
+          && targetMatchesAuthorityScope(uid, 'subtree')
+        )
+        || (
+          ownPermScope('user.edit') in ['office', 'subtree']
+          && targetMatchesAuthorityScope(uid, ownPermScope('user.edit'))
+        )
+        || (
+          ownPermScope('user.create') in ['office', 'subtree']
+          && targetMatchesAuthorityScope(uid, ownPermScope('user.create'))
+        );
+    }
+
+    // Permanent profile photos: writable by owner or user.edit == 'all'; readable by signed-in staff
     match /profiles/{fileName} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn()
-        && (fileName == request.auth.uid + '.jpg' || isSuperAdminEditor())
+        && (fileName == request.auth.uid + '.jpg' || ownPermScope('user.edit') == 'all')
         && request.resource != null
         && request.resource.size <= 3 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
-      allow delete: if isSuperAdminEditor();
+      allow delete: if ownPermScope('user.edit') == 'all';
     }
 
-    // Attendance selfies: only staff with attendance.checkin can upload JPEG <= 2MB to own path;
-    // read follows attendance.photo.view; delete follows attendance.photo.purge / attendance.settle.
+    // Attendance selfies: JPEG <= 2MB uploaded by owner with attendance.checkin; read/delete scoped
     match /attendance/{uid}/{fileName} {
       allow create, update: if isSignedIn()
         && request.auth.uid == uid
         && isApprovedActive()
-        && storagePermScope('attendance.checkin') != ''
+        && ownPermScope('attendance.checkin') == 'self'
         && request.resource != null
         && request.resource.size <= 2 * 1024 * 1024
         && request.resource.contentType == 'image/jpeg';
 
       allow read: if canViewAttendancePhoto(uid);
       allow delete: if canDeleteAttendancePhoto(uid);
+    }
+
+    // Transfer / charge / attachment orders: PDF or image <= 5MB
+    match /orders/{uid}/{fileName} {
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid || canViewTargetUserOrders(uid));
+      allow create, update: if isSignedIn()
+        && request.auth.uid != uid
+        && canWriteTargetUserOrders(uid)
+        && request.resource != null
+        && request.resource.size <= 5 * 1024 * 1024
+        && (
+          request.resource.contentType == 'application/pdf'
+          || request.resource.contentType.matches('image/.*')
+        );
+      allow delete: if false;
     }
   }
 }

@@ -20,6 +20,7 @@ export default function CompleteProfilePage() {
     firebaseUser,
     isBootstrapSuperAdmin,
     registrationOpen,
+    defaultRoleKey,
     offices,
     error: authError,
     fetchPublicBootstrap,
@@ -70,7 +71,7 @@ export default function CompleteProfilePage() {
     [offices, form.officeId]
   );
 
-  const canSelfCreate = registrationOpen || isBootstrapSuperAdmin;
+  const canSelfCreate = (registrationOpen && Boolean(defaultRoleKey)) || isBootstrapSuperAdmin;
   const errorMsg = localError || authError;
 
   const updateField = (key, val) => {
@@ -232,7 +233,7 @@ export default function CompleteProfilePage() {
           <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-3">
             <div className="text-base font-bold text-rose-700 font-display">পাবলিক রেজিস্ট্রেশন বন্ধ আছে</div>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Public self-registration is currently closed. Please copy your Auth UID above and share it with the Super Admin so they can create your profile from Admin → Users → Create Profile for Existing Auth User.
+              Public self-registration is currently closed. Please copy your Auth UID above and share it with an authorized user manager so they can create your profile from Admin → Users → Create Profile for Existing Auth User.
             </p>
             {errorMsg && (
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">{errorMsg}</div>
@@ -242,8 +243,8 @@ export default function CompleteProfilePage() {
           <form onSubmit={handleSubmit} className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 space-y-4">
             <div className="text-xs text-slate-600">
               {isBootstrapSuperAdmin
-                ? 'Super Admin account detected — completing this form will create your active Super Admin profile immediately.'
-                : 'Fill in your official staff information to create your Firestore profile (Super Admin approval will still be required).'}
+                ? 'Bootstrap super user account detected — completing this form will create your active profile immediately.'
+                : 'Fill in your official staff information to create your Firestore profile (account approval will still be required).'}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

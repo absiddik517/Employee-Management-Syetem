@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { collection, getDocs } from 'firebase/firestore';
 import {
+  ArrowRightLeft,
   Check,
   CheckCircle2,
   Copy,
@@ -10,9 +12,11 @@ import {
   Trash2
 } from 'lucide-react';
 import BottomSheet from './BottomSheet.jsx';
+import AssignmentsTimeline from './AssignmentsTimeline.jsx';
 import StatusBadge, { getRoleLabel, getUserInitials } from './StatusBadge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { ROLES, getPermissionScope } from '../../lib/permissions.js';
+import { db, OperationType, handleFirestoreError, withTimeout } from '../../firebase/config.js';
+import { getPermissionScope } from '../../lib/permissions.js';
 
 function formatJoiningDate(val) {
   if (!val) return 'Not set';
@@ -46,16 +50,21 @@ export default function UserDetailSheet({
   user,
   officeName,
   busy = false,
+  assignmentsRefreshKey = 0,
   onClose,
   onEdit,
+  onTransfer,
   onResetDevice,
   onToggleStatus,
   onApprove,
   onDelete
 }) {
-  const { can } = useAuth();
+  const { can, roleRegistry, effectiveAuthUser } = useAuth();
   const [copiedUid, setCopiedUid] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [assignments, setAssignments] = useState([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [assignmentsError, setAssignmentsError] = useState('');
 
   const uid = user ? user.uid || user.id : '';
 
@@ -63,6 +72,49 @@ export default function UserDetailSheet({
     setCopiedUid(false);
     setConfirmReset(false);
   }, [uid, open]);
+
+  useEffect(() => {
+    if (!open || !uid) {
+      setAssignments([]);
+      setAssignmentsError('');
+      setAssignmentsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setAssignmentsLoading(true);
+    setAssignmentsError('');
+
+    withTimeout(
+      getDocs(collection(db, 'users', uid, 'assignments')),
+      12000,
+      'কর্মজীবনের ইতিহাস লোড করতে সময় বেশি লাগছে।'
+    )
+      .then((snap) => {
+        if (cancelled) return;
+        const list = snap.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => {
+            const aOpen = !a.endDate ? 0 : 1;
+            const bOpen = !b.endDate ? 0 : 1;
+            if (aOpen !== bOpen) return aOpen - bOpen;
+            return String(b.startDate || '').localeCompare(String(a.startDate || ''));
+          });
+        setAssignments(list);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setAssignmentsError('কর্মজীবনের ইতিহাস লোড করা যায়নি।');
+        handleFirestoreError(err, OperationType.LIST, `users/${uid}/assignments`);
+      })
+      .finally(() => {
+        if (!cancelled) setAssignmentsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, uid, assignmentsRefreshKey]);
 
   if (!user) return null;
 
@@ -85,11 +137,13 @@ export default function UserDetailSheet({
     officeId: user.officeId || '',
     districtOfficeId: user.districtOfficeId || ''
   };
+  const isSelf = Boolean(effectiveAuthUser?.uid && uid === effectiveAuthUser.uid);
   const canEditUser = can('user.edit', targetScopeObj);
+  const canTransferUser = Boolean(onTransfer) && canEditUser && !isSelf;
   const canApproveUser = isPending && can('user.approve', targetScopeObj);
   const canResetDevice = can('user.resetDevice', targetScopeObj);
   const canDeleteUser = Boolean(onDelete) && can('user.delete', targetScopeObj);
-  const hasAnyAction = canEditUser || canApproveUser || canResetDevice || canDeleteUser;
+  const hasAnyAction = canEditUser || canTransferUser || canApproveUser || canResetDevice || canDeleteUser;
 
   const targetReportScope = getPermissionScope(
     { role: user.role, approvalStatus: 'approved', status: 'active' },
@@ -121,7 +175,7 @@ export default function UserDetailSheet({
 
   const headerExtra = (
     <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-      <StatusBadge kind="role" value={user.role || ROLES.employee.key} />
+      <StatusBadge kind="role" value={user.role || ''} />
       <StatusBadge kind="status" value={user.status || 'active'} />
       <StatusBadge kind="approval" value={user.approvalStatus || 'pending'} />
     </div>
@@ -138,6 +192,18 @@ export default function UserDetailSheet({
         >
           <Edit3 className="w-4 h-4 shrink-0" />
           <span>Edit user</span>
+        </button>
+      )}
+
+      {canTransferUser && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onTransfer(user)}
+          className="min-h-[44px] px-3.5 py-2.5 rounded-[14px] border border-[#0b6b4f]/35 dark:border-[#4fd1a1]/40 bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-[#0b6b4f] dark:text-[#4fd1a1] hover:bg-[#0b6b4f]/15 dark:hover:bg-[#4fd1a1]/25 text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+        >
+          <ArrowRightLeft className="w-4 h-4 shrink-0" />
+          <span>Transfer / Posting</span>
         </button>
       )}
 
@@ -338,6 +404,23 @@ export default function UserDetailSheet({
               Tap &ldquo;Tap again to confirm&rdquo; below to clear this bound device. The staff member will bind a new device on next login.
             </p>
           )}
+        </section>
+
+        {/* Work History (কর্মজীবন) */}
+        <section aria-labelledby="detail-career-heading" className="space-y-2">
+          <h3
+            id="detail-career-heading"
+            className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1"
+          >
+            Work History (কর্মজীবন)
+          </h3>
+          <AssignmentsTimeline
+            assignments={assignments}
+            loading={assignmentsLoading}
+            error={assignmentsError}
+            officeName={officeName}
+            roleRegistry={roleRegistry}
+          />
         </section>
       </div>
     </BottomSheet>

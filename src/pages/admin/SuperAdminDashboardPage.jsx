@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  addDoc,
   collection,
   query,
   where,
@@ -15,13 +16,16 @@ import ConfirmSheet from '../../components/ConfirmSheet.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useData } from '../../context/DataContext.jsx';
 import { db, OperationType, handleFirestoreError } from '../../firebase/config.js';
-import { isDateOlderThanDays, toBanglaDigits } from '../../utils/dhakaTime.js';
-import { ROLES } from '../../lib/permissions.js';
+import { getTodayDhaka, isDateOlderThanDays, toBanglaDigits } from '../../utils/dhakaTime.js';
+import { getDefaultRoleKey, getRoleLabel } from '../../lib/permissions.js';
 
 export default function SuperAdminDashboardPage() {
   const {
     profile,
     offices,
+    roles,
+    roleRegistry,
+    defaultRoleKey,
     assignableRoles,
     can,
     registrationOpen,
@@ -39,6 +43,7 @@ export default function SuperAdminDashboardPage() {
   const [pendingUsers, setPendingUsers] = useState([]);
   const [approvalEdits, setApprovalEdits] = useState({});
   const [oldUnsettledPhotos, setOldUnsettledPhotos] = useState([]);
+  const [expiredChargeCount, setExpiredChargeCount] = useState(0);
   const [feedbackMsg, setFeedbackMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -55,12 +60,14 @@ export default function SuperAdminDashboardPage() {
       const users = uSnap.docs.map((d) => ({ uid: d.id, id: d.id, ...d.data() }));
       setPendingUsers(users);
 
+      const validDefaultRole =
+        defaultRoleKey && roleRegistry[defaultRoleKey] ? defaultRoleKey : '';
       const edits = {};
       for (const u of users) {
         const targetUid = u.uid || u.id;
         edits[targetUid] = {
           officeId: u.officeId || offices[0]?.id || '',
-          role: u.role || ROLES.employee.key
+          role: u.role || validDefaultRole || ''
         };
       }
       setApprovalEdits(edits);
@@ -69,13 +76,54 @@ export default function SuperAdminDashboardPage() {
         .map((d) => ({ id: d.id, ...d.data() }))
         .filter((r) => isDateOlderThanDays(r.date, 15) && (r.checkIn?.photoPath || r.checkOut?.photoPath));
       setOldUnsettledPhotos(oldPhotos);
+
+      if (can('assignment.manage')) {
+        const allUsersSnap = await getDocs(collection(db, 'users'));
+        const activeChargeUsers = allUsersSnap.docs
+          .map((d) => ({ uid: d.id, ...d.data() }))
+          .filter(
+            (u) =>
+              u.approvalStatus === 'approved' &&
+              u.status === 'active' &&
+              ((Array.isArray(u.additionalOfficeIds) && u.additionalOfficeIds.length > 0) ||
+                Boolean(u.attachedOfficeId) ||
+                Boolean(u.actingOfficeId))
+          );
+        const today = getTodayDhaka();
+        let expiredCount = 0;
+        await Promise.all(
+          activeChargeUsers.map(async (u) => {
+            try {
+              const assignSnap = await getDocs(collection(db, 'users', u.uid, 'assignments'));
+              const recs = assignSnap.docs.map((d) => d.data());
+              const hasExpired = recs.some(
+                (r) =>
+                  !r.closedAt &&
+                  r.endDate &&
+                  r.endDate < today &&
+                  ((r.kind === 'additional_charge' &&
+                    Array.isArray(u.additionalOfficeIds) &&
+                    u.additionalOfficeIds.includes(r.officeId)) ||
+                    (r.kind === 'acting_charge' && u.actingOfficeId === r.officeId) ||
+                    (r.kind === 'attachment' && u.attachedOfficeId === r.officeId))
+              );
+              if (hasExpired) expiredCount += 1;
+            } catch {
+              // ignore individual subcollection warning
+            }
+          })
+        );
+        setExpiredChargeCount(expiredCount);
+      } else {
+        setExpiredChargeCount(0);
+      }
     } catch (err) {
       setErrorMsg('অ্যাডমিন ড্যাশবোর্ড লোড করা যায়নি।');
       handleFirestoreError(err, OperationType.LIST, 'admin-dashboard');
     } finally {
       setLoading(false);
     }
-  }, [fetchPublicBootstrap, offices]);
+  }, [fetchPublicBootstrap, offices, can]);
 
   useEffect(() => {
     loadDashboard();
@@ -104,12 +152,19 @@ export default function SuperAdminDashboardPage() {
     setErrorMsg('');
     setFeedbackMsg('');
     const nextVal = !registrationOpen;
+    const preservedDefaultRole =
+      defaultRoleKey && roleRegistry[defaultRoleKey] ? defaultRoleKey : '';
     try {
-      await setDoc(doc(db, 'settings', 'app'), {
-        registrationOpen: nextVal,
-        updatedAt: serverTimestamp(),
-        updatedBy: profile.uid
-      });
+      await setDoc(
+        doc(db, 'settings', 'app'),
+        {
+          registrationOpen: nextVal,
+          defaultRole: preservedDefaultRole,
+          updatedAt: serverTimestamp(),
+          updatedBy: profile.uid
+        },
+        { merge: true }
+      );
       setRegistrationOpen(nextVal);
       await logAudit({
         actor: profile,
@@ -130,9 +185,11 @@ export default function SuperAdminDashboardPage() {
   };
 
   const updateEdit = (uid, patch) => {
+    const validDefault = getDefaultRoleKey();
+    const fallbackRole = validDefault && roleRegistry[validDefault] ? validDefault : '';
     setApprovalEdits((prev) => ({
       ...prev,
-      [uid]: { ...(prev[uid] || { officeId: '', role: ROLES.employee.key }), ...patch }
+      [uid]: { ...(prev[uid] || { officeId: '', role: fallbackRole }), ...patch }
     }));
   };
 
@@ -143,7 +200,13 @@ export default function SuperAdminDashboardPage() {
     }
     setErrorMsg('');
     setFeedbackMsg('');
-    const edit = approvalEdits[targetUid] || { officeId: '', role: ROLES.employee.key };
+    const validDefault = getDefaultRoleKey();
+    const fallbackRole = validDefault && roleRegistry[validDefault] ? validDefault : '';
+    const edit = approvalEdits[targetUid] || { officeId: '', role: fallbackRole };
+    if (!edit.role) {
+      setErrorMsg('অনুমোদন বা বাতিল করার আগে ব্যবহারকারীর জন্য একটি রোল নির্বাচন করুন।');
+      return;
+    }
     const districtOfficeId = computeDistrictOfficeId(edit.officeId);
     try {
       await updateDoc(doc(db, 'users', targetUid), {
@@ -153,6 +216,35 @@ export default function SuperAdminDashboardPage() {
         role: edit.role,
         updatedAt: serverTimestamp()
       });
+      if (status === 'approved' && edit.officeId && edit.role) {
+        try {
+          const existingAssignSnap = await getDocs(
+            query(collection(db, 'users', targetUid, 'assignments'), where('kind', '==', 'primary'))
+          );
+          if (existingAssignSnap.empty) {
+            const resolvedOfficeName = offices.find((o) => o.id === edit.officeId)?.name || edit.officeId;
+            await addDoc(collection(db, 'users', targetUid, 'assignments'), {
+              kind: 'primary',
+              officeId: edit.officeId,
+              districtOfficeId: districtOfficeId || '',
+              officeName: String(resolvedOfficeName).slice(0, 160),
+              designation: String(user.designation || '').slice(0, 120),
+              roleKey: edit.role,
+              roleLabel: String(getRoleLabel(edit.role, roleRegistry) || edit.role).slice(0, 80),
+              startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(user.joiningDate || ''))
+                ? user.joiningDate
+                : getTodayDhaka(),
+              endDate: null,
+              type: 'joined',
+              createdBy: profile.uid,
+              createdByName: String(profile.name || profile.email || 'Admin').slice(0, 120),
+              createdAt: serverTimestamp()
+            });
+          }
+        } catch (assignErr) {
+          console.warn('Initial assignment record write failed:', assignErr);
+        }
+      }
       await logAudit({
         actor: profile,
         action: status === 'approved' ? 'USER_APPROVED' : 'USER_REJECTED',
@@ -227,12 +319,19 @@ export default function SuperAdminDashboardPage() {
     setErrorMsg('');
     setFeedbackMsg('');
     const uid = profile.uid;
+    const preservedDefaultRole =
+      defaultRoleKey && roleRegistry[defaultRoleKey] ? defaultRoleKey : '';
     try {
-      await setDoc(doc(db, 'settings', 'app'), {
-        registrationOpen: true,
-        updatedAt: serverTimestamp(),
-        updatedBy: uid
-      });
+      await setDoc(
+        doc(db, 'settings', 'app'),
+        {
+          registrationOpen: true,
+          defaultRole: preservedDefaultRole,
+          updatedAt: serverTimestamp(),
+          updatedBy: uid
+        },
+        { merge: true }
+      );
 
       const sampleOffices = [
         {
@@ -387,21 +486,59 @@ export default function SuperAdminDashboardPage() {
           )}
         </div>
 
-        {can('settings.manage') && (
-          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        {can('assignment.manage') && expiredChargeCount > 0 && (
+          <section className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-950/40 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">
-                Role Permissions Manager
+              <h2 className="text-base font-bold text-amber-950 dark:text-amber-100 font-display">
+                মেয়াদ শেষ – এখনো চালু ({toBanglaDigits(expiredChargeCount)} জন)
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Customize permissions and access scopes (Self, Office, Subtree, All) for any staff role in real time.
+              <p className="text-xs text-amber-800 dark:text-amber-300 mt-1">
+                কয়েকজন কর্মকর্তার অতিরিক্ত/চলতি দায়িত্ব বা সংযুক্তির নির্ধারিত মেয়াদ শেষ হলেও এখনো চালু আছে।
+              </p>
+            </div>
+            <a
+              href="#/assignments"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-amber-700 hover:bg-amber-800 text-white text-xs font-semibold inline-flex items-center justify-center shrink-0 whitespace-nowrap"
+            >
+              দায়িত্ব ও সংযুক্তি খুলুন
+            </a>
+          </section>
+        )}
+
+        {can('settings.manage') && roles.length === 0 && (
+          <section className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-950/40 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-amber-950 dark:text-amber-100 font-display">
+                কোনো রোল তৈরি করা হয়নি
+              </h2>
+              <p className="text-xs text-amber-800 dark:text-amber-300 mt-1">
+                সিস্টেমে এখনো কোনো ডায়নামিক রোল তৈরি বা আমদানি করা হয়নি। ব্যবহারকারীরা রোল ছাড়া লগইন করতে পারবেন না।
               </p>
             </div>
             <a
               href="#/admin/permissions"
-              className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] dark:bg-[#4fd1a1] dark:text-slate-950 text-white text-xs font-semibold inline-flex items-center justify-center shrink-0"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-amber-700 hover:bg-amber-800 text-white text-xs font-semibold inline-flex items-center justify-center shrink-0 whitespace-nowrap"
             >
-              Manage Role Permissions
+              Role Manager খুলুন
+            </a>
+          </section>
+        )}
+
+        {can('settings.manage') && (
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">
+                Role Manager
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                রোল তৈরি/সম্পাদনা, পারমিশন, অনুমোদন চেইন (Leave / Field Duty / Settlement), ডিফল্ট রেজিস্ট্রেশন রোল ও JSON আমদানি/রপ্তানি পরিচালনা করুন।
+              </p>
+            </div>
+            <a
+              href="#/admin/permissions"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] dark:bg-[#4fd1a1] dark:text-slate-950 text-white text-xs font-semibold inline-flex items-center justify-center shrink-0 whitespace-nowrap"
+            >
+              Open Role Manager
             </a>
           </section>
         )}
@@ -456,7 +593,9 @@ export default function SuperAdminDashboardPage() {
           ) : (
             pendingUsers.map((u) => {
               const targetUid = u.uid || u.id;
-              const edit = approvalEdits[targetUid] || { officeId: '', role: ROLES.employee.key };
+              const validDefault = getDefaultRoleKey();
+              const fallbackRole = validDefault && roleRegistry[validDefault] ? validDefault : '';
+              const edit = approvalEdits[targetUid] || { officeId: '', role: fallbackRole };
               return (
                 <div key={targetUid} className="p-4 sm:p-5 space-y-3">
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -497,6 +636,9 @@ export default function SuperAdminDashboardPage() {
                         onChange={(e) => updateEdit(targetUid, { role: e.target.value })}
                         className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs bg-white dark:bg-slate-800"
                       >
+                        <option value="" disabled>
+                          Select role...
+                        </option>
                         {assignableRoles.map((r) => (
                           <option key={r.key} value={r.key}>
                             {r.label}
@@ -507,8 +649,9 @@ export default function SuperAdminDashboardPage() {
                     <div className="flex items-end gap-2">
                       <button
                         type="button"
+                        disabled={!edit.role}
                         onClick={() => decideUser(u, 'approved')}
-                        className="flex-1 min-h-[44px] px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
+                        className="flex-1 min-h-[44px] px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-50"
                       >
                         Approve
                       </button>

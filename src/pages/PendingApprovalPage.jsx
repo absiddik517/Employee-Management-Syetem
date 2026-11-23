@@ -33,12 +33,12 @@ export default function PendingApprovalPage() {
         <div>
           <div className="text-xs font-semibold text-amber-700">Account Verification</div>
           <h1 className="text-xl font-bold text-slate-900 font-display mt-1">
-            {isRejected ? 'Registration Rejected' : 'Pending Super Admin Approval'}
+            {isRejected ? 'Registration Rejected' : 'Pending Administrator Approval'}
           </h1>
           <p className="text-sm text-slate-600 mt-2 leading-relaxed">
             {isRejected
-              ? 'আপনার রেজিস্ট্রেশনটি অনুমোদন করা হয়নি। বিস্তারিত জানতে সুপার অ্যাডমিনের সাথে যোগাযোগ করুন।'
-              : 'আপনার অ্যাকাউন্টটি তৈরি হয়েছে এবং সুপার অ্যাডমিনের অনুমোদনের অপেক্ষায় রয়েছে। অনুমোদনের আগে হাজিরা দেওয়া যাবে না।'}
+              ? 'আপনার রেজিস্ট্রেশনটি অনুমোদন করা হয়নি। বিস্তারিত জানতে অনুমোদনকারী প্রশাসকের সাথে যোগাযোগ করুন।'
+              : 'আপনার অ্যাকাউন্টটি তৈরি হয়েছে এবং অনুমোদনকারী প্রশাসকের অনুমোদনের অপেক্ষায় রয়েছে। অনুমোদনের আগে হাজিরা দেওয়া যাবে না।'}
           </p>
         </div>
 

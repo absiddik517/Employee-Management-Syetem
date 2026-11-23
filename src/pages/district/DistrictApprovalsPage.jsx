@@ -55,7 +55,36 @@ export default function DistrictApprovalsPage() {
       const canQueryFieldSubtree = isWideScope('fieldduty.review') || isWideScope('attendance.view');
       const canQueryUsersSubtree = isWideScope('user.view');
 
-      const [l1, l2, f1, f2, u1, u2] = await Promise.all([
+      const userQueries = [];
+      if (canViewUsers) {
+        if (canQueryUsersSubtree) {
+          userQueries.push(getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId))));
+        }
+        userQueries.push(
+          getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId))),
+          getDocs(query(collection(db, 'users'), where('attachedOfficeId', '==', myOfficeId))),
+          getDocs(query(collection(db, 'users'), where('actingOfficeId', '==', myOfficeId)))
+        );
+        if (myOfficeId === profile?.officeId || myOfficeId === profile?.actingOfficeId) {
+          userQueries.push(
+            getDocs(query(collection(db, 'users'), where('additionalOfficeIds', 'array-contains', myOfficeId)))
+          );
+        } else if (
+          Array.isArray(profile?.additionalOfficeIds) &&
+          profile.additionalOfficeIds.includes(myOfficeId)
+        ) {
+          userQueries.push(
+            getDocs(
+              query(
+                collection(db, 'users'),
+                where('additionalOfficeIds', 'array-contains-any', profile.additionalOfficeIds)
+              )
+            )
+          );
+        }
+      }
+
+      const [l1, l2, f1, f2, ...uSnaps] = await Promise.all([
         canQueryLeaves && canQueryLeavesSubtree
           ? getDocs(query(collection(db, 'leaves'), where('districtOfficeId', '==', myOfficeId)))
           : Promise.resolve(emptySnap),
@@ -68,12 +97,7 @@ export default function DistrictApprovalsPage() {
         canQueryField
           ? getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId)))
           : Promise.resolve(emptySnap),
-        canViewUsers && canQueryUsersSubtree
-          ? getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId)))
-          : Promise.resolve(emptySnap),
-        canViewUsers
-          ? getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId)))
-          : Promise.resolve(emptySnap)
+        ...userQueries
       ]);
 
       const merge = (a, b) => {
@@ -87,8 +111,10 @@ export default function DistrictApprovalsPage() {
       };
 
       const uMap = new Map();
-      for (const d of [...u1.docs, ...u2.docs]) {
-        uMap.set(d.id, { uid: d.id, id: d.id, ...d.data() });
+      for (const snap of uSnaps) {
+        for (const d of snap.docs) {
+          uMap.set(d.id, { uid: d.id, id: d.id, ...d.data() });
+        }
       }
 
       setStaffByUid(uMap);
@@ -180,10 +206,16 @@ export default function DistrictApprovalsPage() {
               className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
                 activeChargeType === 'additional'
                   ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                  : activeChargeType === 'acting'
+                  ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
                   : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
               }`}
             >
-              {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'}
+              {activeChargeType === 'additional'
+                ? 'অতিরিক্ত দায়িত্ব'
+                : activeChargeType === 'acting'
+                ? 'চলতি দায়িত্ব'
+                : 'মূল দায়িত্ব'}
             </span>
           </div>
         )}
@@ -261,7 +293,11 @@ export default function DistrictApprovalsPage() {
                         )}
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400">
-                        {officeName(item.officeId)} · {item.startDate} to {item.endDate}
+                        {officeName(item.officeId)}
+                        {item.homeOfficeId && item.homeOfficeId !== item.officeId
+                          ? ` (মূল কর্মস্থল: ${officeName(item.homeOfficeId)})`
+                          : ''}{' '}
+                        · {item.startDate} to {item.endDate}
                       </div>
                       <div className="text-xs text-slate-700 dark:text-slate-300 mt-1">
                         <span className="font-semibold">{item.leaveType || item.location}:</span> {item.reason}

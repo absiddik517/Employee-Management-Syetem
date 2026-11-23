@@ -115,7 +115,12 @@ export default function HeadOfficeReportsPage() {
 
   const filteredAttendance = useMemo(() => {
     if (filterOfficeId === 'all') return attendanceRecords;
-    return attendanceRecords.filter((r) => r.officeId === filterOfficeId);
+    return attendanceRecords.filter(
+      (r) =>
+        r.officeId === filterOfficeId ||
+        r.homeOfficeId === filterOfficeId ||
+        r.checkOutOfficeId === filterOfficeId
+    );
   }, [attendanceRecords, filterOfficeId]);
 
   const reviewableAdLeaves = useMemo(() => {
@@ -126,8 +131,8 @@ export default function HeadOfficeReportsPage() {
       return canReview(
         {
           uid: applicant.uid,
-          officeId: applicant.officeId,
-          districtOfficeId: applicant.districtOfficeId,
+          officeId: item.officeId,
+          districtOfficeId: item.districtOfficeId,
           role: applicant.role
         },
         'leave'
@@ -147,8 +152,8 @@ export default function HeadOfficeReportsPage() {
       !canReview(
         {
           uid: applicant.uid,
-          officeId: applicant.officeId,
-          districtOfficeId: applicant.districtOfficeId,
+          officeId: item.officeId,
+          districtOfficeId: item.districtOfficeId,
           role: applicant.role
         },
         'leave'
@@ -384,7 +389,14 @@ export default function HeadOfficeReportsPage() {
                             {(rep.rows || []).map((row) => (
                               <tr key={row.uid}>
                                 <td className="py-2 pr-3 font-medium text-slate-900 dark:text-slate-100">
-                                  {row.name} ({row.designation})
+                                  <div>
+                                    {row.name} ({row.designation})
+                                  </div>
+                                  {Number(row.otherOfficeDays) > 0 && (
+                                    <div className="text-[11px] text-sky-700 dark:text-sky-400">
+                                      অন্য অফিসে হাজিরা: {row.otherOfficeDays} দিন
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="py-2 px-2 text-right font-mono-tabular">{row.onTime}</td>
                                 <td className="py-2 px-2 text-right font-mono-tabular">{row.late}</td>
@@ -456,9 +468,16 @@ export default function HeadOfficeReportsPage() {
                         {rec.employeeName}
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400">
-                        {officeName(rec.officeId)} · {rec.designation || 'Staff'} · In{' '}
+                        {officeName(rec.officeId)}
+                        {rec.homeOfficeId && rec.homeOfficeId !== rec.officeId
+                          ? ` (মূল কর্মস্থল: ${officeName(rec.homeOfficeId)})`
+                          : ''}{' '}
+                        · {rec.designation || 'Staff'} · In{' '}
                         {rec.checkIn ? formatDhakaTime(rec.checkIn.time) : '—'} · Out{' '}
                         {rec.checkOut ? formatDhakaTime(rec.checkOut.time) : '—'}
+                        {rec.checkOutOfficeId && rec.checkOutOfficeId !== rec.officeId
+                          ? ` (প্রস্থান: ${officeName(rec.checkOutOfficeId)})`
+                          : ''}
                       </div>
                     </div>
                     <div className="flex flex-col sm:items-end gap-0.5">
@@ -505,7 +524,11 @@ export default function HeadOfficeReportsPage() {
                           )}
                         </div>
                         <div className="text-xs text-slate-500 dark:text-slate-400">
-                          {officeName(item.officeId)} · {item.startDate} to {item.endDate}
+                          {officeName(item.officeId)}
+                          {item.homeOfficeId && item.homeOfficeId !== item.officeId
+                            ? ` (মূল কর্মস্থল: ${officeName(item.homeOfficeId)})`
+                            : ''}{' '}
+                          · {item.startDate} to {item.endDate}
                         </div>
                         <div className="text-xs text-slate-700 dark:text-slate-300 mt-1">
                           <span className="font-semibold">{item.leaveType}:</span> {item.reason}

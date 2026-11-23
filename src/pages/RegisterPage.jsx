@@ -16,7 +16,7 @@ function buildRegisterTasks() {
 
 export default function RegisterPage() {
   const navigate = useNavigate();
-  const { registrationOpen, offices, error: authError, fetchPublicBootstrap, registerEmployee } = useAuth();
+  const { registrationOpen, defaultRoleKey, offices, error: authError, fetchPublicBootstrap, registerEmployee } = useAuth();
   const previewUrlRef = useRef('');
 
   const [loadingInit, setLoadingInit] = useState(true);
@@ -133,8 +133,8 @@ export default function RegisterPage() {
       <div className="w-full max-w-lg mx-auto">
         <div className="mb-5 flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl font-bold text-slate-900 font-display">Employee Registration</h1>
-            <p className="text-xs text-slate-500 mt-0.5">Accounts require Super Admin approval before check-in.</p>
+            <h1 className="text-xl font-bold text-slate-900 font-display">Staff Registration</h1>
+            <p className="text-xs text-slate-500 mt-0.5">Accounts require approval before check-in.</p>
           </div>
           <Link to="/login" className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 whitespace-nowrap py-2">
             Back to Sign In
@@ -145,11 +145,13 @@ export default function RegisterPage() {
           <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-sm text-slate-600">
             লোড হচ্ছে...
           </div>
-        ) : !registrationOpen ? (
+        ) : !registrationOpen || !defaultRoleKey ? (
           <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-4">
             <div className="text-lg font-bold text-rose-700 font-display">রেজিস্ট্রেশন বন্ধ আছে</div>
             <p className="text-sm text-slate-600">
-              New public registrations are currently closed by the Super Admin. Please contact your office administrator.
+              {!registrationOpen
+                ? 'New public registrations are currently closed. Please contact your authorizing office.'
+                : 'পাবলিক রেজিস্ট্রেশনের জন্য এখনো কোনো ডিফল্ট রোল নির্ধারণ করা হয়নি। অনুগ্রহ করে প্রশাসকের সাথে যোগাযোগ করুন।'}
             </p>
             <Link
               to="/login"

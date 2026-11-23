@@ -8,7 +8,16 @@ export function downloadReportCsv(report) {
     return s;
   };
 
-  const headers = ['Employee Name', 'Designation', 'On Time', 'Late', 'Leave', 'Absent', 'Total Settled'];
+  const headers = [
+    'Employee Name',
+    'Designation',
+    'On Time',
+    'Late',
+    'Leave',
+    'Absent',
+    'Other Office Days',
+    'Total Settled'
+  ];
   const lines = [headers.join(',')];
 
   for (const row of report.rows) {
@@ -21,6 +30,7 @@ export function downloadReportCsv(report) {
         row.late || 0,
         row.leave || 0,
         row.absent || 0,
+        row.otherOfficeDays || 0,
         total
       ].join(',')
     );

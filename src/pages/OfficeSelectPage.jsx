@@ -123,9 +123,25 @@ export default function OfficeSelectPage() {
 
         <section aria-label="Assigned offices" className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {assignedOffices.map((item) => {
-            const { office, isPrimary } = item;
+            const { office, isPrimary, chargeType } = item;
             const subCount = upazilaCounts.get(office.id) || 0;
             const isCurrentlyActive = activeOfficeId === office.id;
+            const chargeLabel =
+              chargeType === 'acting'
+                ? 'চলতি দায়িত্ব'
+                : chargeType === 'additional'
+                ? 'অতিরিক্ত দায়িত্ব'
+                : 'মূল দায়িত্ব';
+            const badgeColors = isPrimary
+              ? 'bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-[#0b6b4f] dark:text-[#4fd1a1]'
+              : chargeType === 'acting'
+              ? 'bg-sky-100/90 dark:bg-sky-950/60 text-sky-800 dark:text-sky-300'
+              : 'bg-amber-100/80 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300';
+            const iconColors = isPrimary
+              ? 'bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-[#0b6b4f] dark:text-[#4fd1a1]'
+              : chargeType === 'acting'
+              ? 'bg-sky-500/10 dark:bg-sky-400/15 text-sky-700 dark:text-sky-300'
+              : 'bg-amber-500/10 dark:bg-amber-400/15 text-amber-700 dark:text-amber-300';
 
             return (
               <button
@@ -141,11 +157,7 @@ export default function OfficeSelectPage() {
                 <div className="space-y-3 w-full">
                   <div className="flex items-start justify-between gap-3">
                     <div
-                      className={`w-11 h-11 rounded-[14px] flex items-center justify-center shrink-0 ${
-                        isPrimary
-                          ? 'bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-[#0b6b4f] dark:text-[#4fd1a1]'
-                          : 'bg-amber-500/10 dark:bg-amber-400/15 text-amber-700 dark:text-amber-300'
-                      }`}
+                      className={`w-11 h-11 rounded-[14px] flex items-center justify-center shrink-0 ${iconColors}`}
                     >
                       <Building2 className="w-5 h-5" />
                     </div>
@@ -158,13 +170,9 @@ export default function OfficeSelectPage() {
                         </span>
                       )}
                       <span
-                        className={`text-xs font-semibold px-2.5 py-1 rounded-[10px] ${
-                          isPrimary
-                            ? 'bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-[#0b6b4f] dark:text-[#4fd1a1]'
-                            : 'bg-amber-100/80 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
-                        }`}
+                        className={`text-xs font-semibold px-2.5 py-1 rounded-[10px] ${badgeColors}`}
                       >
-                        {isPrimary ? 'মূল দায়িত্ব' : 'অতিরিক্ত দায়িত্ব'}
+                        {chargeLabel}
                       </span>
                     </div>
                   </div>

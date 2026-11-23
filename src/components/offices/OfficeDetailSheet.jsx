@@ -40,6 +40,8 @@ export default function OfficeDetailSheet({
   parentName = '',
   subOffices = [],
   busy = false,
+  canEdit = true,
+  canDelete = true,
   onClose,
   onEdit,
   onDelete,
@@ -81,7 +83,7 @@ export default function OfficeDetailSheet({
   };
 
   const handleDeleteTap = async () => {
-    if (hasSubOffices || busy) return;
+    if (!canDelete || hasSubOffices || busy) return;
     if (!confirmDelete) {
       setConfirmDelete(true);
       if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
@@ -117,17 +119,19 @@ export default function OfficeDetailSheet({
 
   const footer = (
     <div className="space-y-2.5">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => onEdit(office)}
-        className="w-full min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
-      >
-        <Edit3 className="w-4 h-4 shrink-0" />
-        <span>Edit office</span>
-      </button>
+      {canEdit && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onEdit(office)}
+          className="w-full min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+        >
+          <Edit3 className="w-4 h-4 shrink-0" />
+          <span>Edit office</span>
+        </button>
+      )}
 
-      <div className="grid grid-cols-2 gap-2.5">
+      <div className={`grid gap-2.5 ${canDelete ? 'grid-cols-2' : 'grid-cols-1'}`}>
         <a
           href={mapsHref}
           target="_blank"
@@ -138,23 +142,25 @@ export default function OfficeDetailSheet({
           <span>View on map</span>
         </a>
 
-        <button
-          type="button"
-          disabled={hasSubOffices || busy}
-          onClick={handleDeleteTap}
-          aria-live="polite"
-          className={`min-h-[44px] px-3.5 py-2.5 rounded-[14px] border text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-45 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 ${
-            confirmDelete
-              ? 'bg-rose-600 hover:bg-rose-700 border-rose-600 text-white'
-              : 'border-rose-200 dark:border-rose-900/70 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100/80 dark:hover:bg-rose-950/60'
-          }`}
-        >
-          <Trash2 className="w-4 h-4 shrink-0" />
-          <span>{confirmDelete ? 'Tap again to confirm' : 'Delete'}</span>
-        </button>
+        {canDelete && (
+          <button
+            type="button"
+            disabled={hasSubOffices || busy}
+            onClick={handleDeleteTap}
+            aria-live="polite"
+            className={`min-h-[44px] px-3.5 py-2.5 rounded-[14px] border text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-45 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 ${
+              confirmDelete
+                ? 'bg-rose-600 hover:bg-rose-700 border-rose-600 text-white'
+                : 'border-rose-200 dark:border-rose-900/70 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100/80 dark:hover:bg-rose-950/60'
+            }`}
+          >
+            <Trash2 className="w-4 h-4 shrink-0" />
+            <span>{confirmDelete ? 'Tap again to confirm' : 'Delete'}</span>
+          </button>
+        )}
       </div>
 
-      {hasSubOffices && (
+      {canDelete && hasSubOffices && (
         <p className="text-xs text-amber-700 dark:text-amber-300 text-center" role="note">
           Remove or move its sub-offices before deleting.
         </p>

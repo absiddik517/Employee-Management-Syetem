@@ -1,7 +1,6 @@
 import React from 'react';
 import { ChevronRight, Smartphone } from 'lucide-react';
 import StatusBadge, { getUserInitials } from './StatusBadge.jsx';
-import { ROLES } from '../../lib/permissions.js';
 
 export default function UserTable({ users, officeName, onSelect }) {
   return (
@@ -61,7 +60,7 @@ export default function UserTable({ users, officeName, onSelect }) {
                   </td>
 
                   <td className="py-3.5 px-3 whitespace-nowrap">
-                    <StatusBadge kind="role" value={u.role || ROLES.employee.key} />
+                    <StatusBadge kind="role" value={u.role || ''} />
                   </td>
 
                   <td className="py-3.5 px-3 text-xs text-slate-600 dark:text-slate-300 max-w-[190px] truncate">

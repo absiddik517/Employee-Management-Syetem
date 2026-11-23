@@ -5,7 +5,7 @@ import AppShell from '../components/AppShell.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { db, OperationType, handleFirestoreError } from '../firebase/config.js';
 import { formatDhakaDateTime } from '../utils/dhakaTime.js';
-import { getRoleLabel, getUserOfficeScopeIds } from '../lib/permissions.js';
+import { getActingGrant, getAuthorityOfficeIds, getPermissionScope, getRoleLabel } from '../lib/permissions.js';
 
 function timestampMillis(ts) {
   if (!ts) return 0;
@@ -15,7 +15,7 @@ function timestampMillis(ts) {
 }
 
 export default function AuditLogPage() {
-  const { effectiveAuthUser, offices, permissionScope } = useAuth();
+  const { effectiveAuthUser, offices, permissionScope, roleRegistry } = useAuth();
   const [loading, setLoading] = useState(true);
   const [logs, setLogs] = useState([]);
   const [search, setSearch] = useState('');
@@ -36,14 +36,34 @@ export default function AuditLogPage() {
         );
         items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       } else if (scope === 'subtree' || scope === 'office') {
-        const scopeIds = getUserOfficeScopeIds(effectiveAuthUser);
-        if (scopeIds.length > 0) {
+        const ownScope = getPermissionScope(
+          { ...effectiveAuthUser, actingOfficeId: '', actingRoleKey: '' },
+          'audit.view',
+          roleRegistry
+        );
+        const actingGrant = getActingGrant(effectiveAuthUser, roleRegistry);
+        const actScope = actingGrant?.role?.permissions?.['audit.view'] || '';
+        const officeScopes = new Map();
+        if (ownScope === 'office' || ownScope === 'subtree') {
+          for (const oid of getAuthorityOfficeIds(effectiveAuthUser)) {
+            if (oid) officeScopes.set(oid, ownScope);
+          }
+        }
+        if (actingGrant?.officeId && (actScope === 'office' || actScope === 'subtree')) {
+          const prev = officeScopes.get(actingGrant.officeId);
+          officeScopes.set(
+            actingGrant.officeId,
+            prev === 'subtree' || actScope === 'subtree' ? 'subtree' : 'office'
+          );
+        }
+
+        if (officeScopes.size > 0) {
           const queries = [];
-          for (const oid of scopeIds) {
+          for (const [oid, oidScope] of officeScopes.entries()) {
             queries.push(
               getDocs(query(collection(db, 'auditLogs'), where('officeId', '==', oid), limit(100)))
             );
-            if (scope === 'subtree') {
+            if (oidScope === 'subtree') {
               queries.push(
                 getDocs(query(collection(db, 'auditLogs'), where('districtOfficeId', '==', oid), limit(100)))
               );

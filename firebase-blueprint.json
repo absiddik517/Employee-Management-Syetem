@@ -15,6 +15,7 @@
         "startTime": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
         "graceMinutes": { "type": "number" },
         "endTime": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
+        "createdBy": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -22,7 +23,7 @@
     },
     "User": {
       "title": "User",
-      "description": "Employee or officer account profile and role binding",
+      "description": "Employee or officer account profile and role binding (role is required for standard users and optional for bootstrap super user)",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -33,22 +34,25 @@
         "email": { "type": "string", "format": "email", "maxLength": 160 },
         "officeId": { "type": "string", "maxLength": 128 },
         "districtOfficeId": { "type": "string", "maxLength": 128 },
-        "additionalOfficeIds": { "type": "array", "description": "Optional list of additional district office IDs assigned for extra charge" },
+        "additionalOfficeIds": { "type": "array", "description": "Optional list of additional charge office IDs" },
+        "attachedOfficeId": { "type": "string", "maxLength": 128 },
+        "actingOfficeId": { "type": "string", "maxLength": 128 },
+        "actingRoleKey": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,39}$" },
         "joiningDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
         "status": { "type": "string", "enum": ["active", "resigned"] },
         "resignationDate": { "type": "string", "maxLength": 20 },
         "profilePhotoPath": { "type": "string", "maxLength": 300 },
         "role": {
           "type": "string",
-          "enum": ["employee", "unfeo", "assistant_director", "head_office_officer", "director_general", "super_admin", "office_head", "district_officer", "head_office"],
-          "description": "Canonical roles plus legacy aliases preserved during role migration"
+          "pattern": "^[a-z][a-z0-9_]{1,39}$",
+          "description": "Dynamic role key referencing /roles/{roleKey}"
         },
         "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
         "boundDeviceId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["uid", "name", "designation", "address", "mobile", "email", "officeId", "joiningDate", "status", "role", "approvalStatus", "createdAt", "updatedAt"]
+      "required": ["uid", "name", "designation", "address", "mobile", "email", "officeId", "joiningDate", "status", "approvalStatus", "createdAt", "updatedAt"]
     },
     "Attendance": {
       "title": "Attendance",
@@ -60,6 +64,10 @@
         "designation": { "type": "string", "maxLength": 120 },
         "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "homeOfficeId": { "type": "string", "maxLength": 128 },
+        "homeDistrictOfficeId": { "type": "string", "maxLength": 128 },
+        "checkOutOfficeId": { "type": "string", "maxLength": 128 },
+        "checkOutDistrictOfficeId": { "type": "string", "maxLength": 128 },
         "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
         "isFieldDuty": { "type": "boolean" },
         "checkIn": { "type": "object" },
@@ -108,6 +116,8 @@
         "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "homeOfficeId": { "type": "string", "maxLength": 128 },
+        "homeDistrictOfficeId": { "type": "string", "maxLength": 128 },
         "startDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
         "endDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
         "leaveType": { "type": "string", "minLength": 2, "maxLength": 60 },
@@ -130,6 +140,8 @@
         "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "homeOfficeId": { "type": "string", "maxLength": 128 },
+        "homeDistrictOfficeId": { "type": "string", "maxLength": 128 },
         "startDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
         "endDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
         "location": { "type": "string", "minLength": 2, "maxLength": 200 },
@@ -195,29 +207,69 @@
     },
     "AppSettings": {
       "title": "AppSettings",
-      "description": "Global application settings including public registration switch",
+      "description": "Global application settings including public registration switch and default registration role",
       "type": "object",
       "properties": {
         "registrationOpen": { "type": "boolean" },
+        "defaultRole": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,39}$" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "updatedBy": { "type": "string", "maxLength": 128 }
       },
       "required": ["registrationOpen", "updatedAt", "updatedBy"]
     },
-    "PermissionConfig": {
-      "title": "PermissionConfig",
-      "description": "Dynamic per-role permission scope overrides managed by Super Admin in settings/permissions",
+    "Role": {
+      "title": "Role",
+      "description": "Dynamic role definition stored in roles/{roleKey} as the single source of truth for permissions, rank, and approval chains",
       "type": "object",
       "properties": {
-        "overrides": { "type": "object", "description": "Map of roleKey -> { permissionKey: 'none' | 'self' | 'office' | 'subtree' | 'all' }" },
+        "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,39}$" },
+        "label": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 300 },
+        "rank": { "type": "number" },
+        "isSuper": { "type": "boolean" },
+        "chargeEligible": { "type": "boolean" },
+        "actingEligible": { "type": "boolean" },
+        "homeRoute": { "type": "string", "enum": ["admin", "district", "office-head", "head-office", "employee"] },
+        "permissions": { "type": "object", "description": "Map of permissionKey -> scope ('none' | 'self' | 'office' | 'subtree' | 'all')" },
+        "review": { "type": "object", "description": "Map { leave, fieldduty, settle } -> { applicantRoleKey: scope }" },
+        "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
-        "updatedBy": { "type": "string", "maxLength": 128 },
-        "updatedByName": { "type": "string", "maxLength": 120 }
+        "updatedBy": { "type": "string", "maxLength": 128 }
       },
-      "required": ["overrides", "updatedAt", "updatedBy"]
+      "required": ["key", "label", "rank", "isSuper", "chargeEligible", "actingEligible", "permissions", "review", "createdAt", "updatedAt", "updatedBy"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Append-only posting, transfer, charge, and attachment work history entry under /users/{uid}/assignments",
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["primary", "additional_charge", "acting_charge", "attachment"] },
+        "officeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "districtOfficeId": { "type": "string", "maxLength": 128 },
+        "officeName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "designation": { "type": "string", "maxLength": 120 },
+        "roleKey": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,39}$" },
+        "roleLabel": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "startDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "endDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "type": { "type": "string", "enum": ["joined", "transfer", "role_change", "designation_change", "charge_started", "charge_ended", "resigned"] },
+        "orderNo": { "type": "string", "maxLength": 120 },
+        "orderDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "reason": { "type": "string", "maxLength": 500 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "closedBy": { "type": "string", "maxLength": 128 },
+        "closedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["kind", "officeId", "officeName", "roleKey", "roleLabel", "startDate", "type", "createdBy", "createdByName", "createdAt"]
     }
   },
   "firestore": {
+    "/roles/{roleKey}": {
+      "schema": { "$ref": "#/entities/Role" },
+      "description": "Dynamic role definitions created and managed by super users"
+    },
     "/offices/{officeId}": {
       "schema": { "$ref": "#/entities/Office" },
       "description": "Office hierarchy records with geofence center, radius, and duty hours"
@@ -225,6 +277,10 @@
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },
       "description": "User profiles, role assignments, approval status, and bound device IDs"
+    },
+    "/users/{userId}/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Append-only work history entries for postings, transfers, role/designation changes, charges, and attachments"
     },
     "/attendance/{attendanceId}": {
       "schema": { "$ref": "#/entities/Attendance" },
@@ -256,7 +312,7 @@
     },
     "/settings/{settingId}": {
       "schema": { "$ref": "#/entities/AppSettings" },
-      "description": "Global settings documents: settings/app (AppSettings) and settings/permissions (PermissionConfig)"
+      "description": "Global settings documents: settings/app (AppSettings)"
     }
   }
 }

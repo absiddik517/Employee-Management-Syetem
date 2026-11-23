@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useMemo, useRef } from '
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { ref as storageRef, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, storage, OperationType, handleFirestoreError } from '../firebase/config.js';
-import { ROLES, normalizeRole } from '../lib/permissions.js';
+import { isBootstrapSuperUser } from '../lib/permissions.js';
 
 const DataContext = createContext(null);
 
@@ -47,7 +47,9 @@ export function DataProvider({ children }) {
   }) => {
     const rawOld = typeof oldValue === 'string' ? oldValue : JSON.stringify(oldValue ?? '');
     const rawNew = typeof newValue === 'string' ? newValue : JSON.stringify(newValue ?? '');
-    const resolvedActorRole = normalizeRole(actor?.role) || actor?.role || ROLES.employee.key;
+    const rawActorRole = typeof actor?.role === 'string' ? actor.role.trim() : '';
+    const resolvedActorRole =
+      rawActorRole || (isBootstrapSuperUser(actor) ? 'bootstrap' : 'unknown');
     const payload = {
       actorUid: actor?.uid || actor?.id || '',
       actorName: String(actor?.name || actor?.email || 'Admin').slice(0, 120),

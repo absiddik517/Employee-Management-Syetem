@@ -19,7 +19,17 @@ import { db, OperationType, handleFirestoreError } from '../../firebase/config.j
 import { getTodayDhaka, formatDhakaTime, isWeekendDhaka } from '../../utils/dhakaTime.js';
 
 export default function DistrictSettlementPage() {
-  const { profile, offices, activeOfficeId, activeOffice, activeChargeType, can, canReview, permissionScope } = useAuth();
+  const {
+    profile,
+    offices,
+    activeOfficeId,
+    activeOffice,
+    activeChargeType,
+    can,
+    canReview,
+    permissionScope,
+    computeDistrictOfficeId
+  } = useAuth();
   const { resolveStorageUrl, deleteStoragePathSafe, logAudit } = useData();
 
   const [loading, setLoading] = useState(true);
@@ -65,6 +75,11 @@ export default function DistrictSettlementPage() {
     [offices, myOfficeId]
   );
 
+  const managedOfficeIds = useMemo(
+    () => new Set(managedOffices.map((o) => o.id)),
+    [managedOffices]
+  );
+
   const staffByUid = useMemo(() => {
     const map = new Map();
     for (const s of staffList) map.set(s.uid, s);
@@ -107,50 +122,106 @@ export default function DistrictSettlementPage() {
 
       const canUserSubtree = isWideScope('user.view');
       const canAttSubtree = isWideScope('attendance.view');
+      const canAttView = can('attendance.view');
+      const canLeaveViewOrAtt = can('leave.view') || canAttView;
       const canLeaveSubtree = isWideScope('leave.review') || canAttSubtree;
       const canFieldSubtree = isWideScope('fieldduty.review') || canAttSubtree;
 
-      const [uDist, uOwn, aDist, aOwn, hSnap, lDist, lOwn, fDist, fOwn] = await Promise.all([
+      const userQueries = [
         canUserSubtree
           ? getDocs(query(collection(db, 'users'), where('districtOfficeId', '==', myOfficeId)))
           : Promise.resolve(emptySnap),
         getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId))),
+        getDocs(query(collection(db, 'users'), where('attachedOfficeId', '==', myOfficeId))),
+        getDocs(query(collection(db, 'users'), where('actingOfficeId', '==', myOfficeId))),
+        myOfficeId === profile?.officeId || myOfficeId === profile?.actingOfficeId
+          ? getDocs(query(collection(db, 'users'), where('additionalOfficeIds', 'array-contains', myOfficeId)))
+          : Array.isArray(profile?.additionalOfficeIds) && profile.additionalOfficeIds.includes(myOfficeId)
+          ? getDocs(
+              query(
+                collection(db, 'users'),
+                where('additionalOfficeIds', 'array-contains-any', profile.additionalOfficeIds)
+              )
+            )
+          : Promise.resolve(emptySnap)
+      ];
+
+      const attQueries = [
         canAttSubtree
           ? getDocs(query(collection(db, 'attendance'), where('districtOfficeId', '==', myOfficeId), where('date', '==', dateOverride)))
           : Promise.resolve(emptySnap),
         getDocs(query(collection(db, 'attendance'), where('officeId', '==', myOfficeId), where('date', '==', dateOverride))),
-        getDocs(query(collection(db, 'holidays'), where('type', 'in', ['government', 'national', 'optional']))),
+        canAttView
+          ? getDocs(query(collection(db, 'attendance'), where('homeOfficeId', '==', myOfficeId), where('date', '==', dateOverride)))
+          : Promise.resolve(emptySnap),
+        canAttView
+          ? getDocs(query(collection(db, 'attendance'), where('checkOutOfficeId', '==', myOfficeId), where('date', '==', dateOverride)))
+          : Promise.resolve(emptySnap),
+        canAttSubtree
+          ? getDocs(query(collection(db, 'attendance'), where('homeDistrictOfficeId', '==', myOfficeId), where('date', '==', dateOverride)))
+          : Promise.resolve(emptySnap),
+        canAttSubtree
+          ? getDocs(query(collection(db, 'attendance'), where('checkOutDistrictOfficeId', '==', myOfficeId), where('date', '==', dateOverride)))
+          : Promise.resolve(emptySnap)
+      ];
+
+      const leaveQueries = [
         canLeaveSubtree
           ? getDocs(query(collection(db, 'leaves'), where('districtOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
           : Promise.resolve(emptySnap),
         getDocs(query(collection(db, 'leaves'), where('officeId', '==', myOfficeId), where('status', '==', 'approved'))),
+        canLeaveViewOrAtt
+          ? getDocs(query(collection(db, 'leaves'), where('homeOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
+          : Promise.resolve(emptySnap),
+        canLeaveSubtree && canLeaveViewOrAtt
+          ? getDocs(query(collection(db, 'leaves'), where('homeDistrictOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
+          : Promise.resolve(emptySnap)
+      ];
+
+      const fieldQueries = [
         canFieldSubtree
           ? getDocs(query(collection(db, 'fieldDuties'), where('districtOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
           : Promise.resolve(emptySnap),
-        getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId), where('status', '==', 'approved')))
+        getDocs(query(collection(db, 'fieldDuties'), where('officeId', '==', myOfficeId), where('status', '==', 'approved'))),
+        canLeaveViewOrAtt
+          ? getDocs(query(collection(db, 'fieldDuties'), where('homeOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
+          : Promise.resolve(emptySnap),
+        canFieldSubtree && canLeaveViewOrAtt
+          ? getDocs(query(collection(db, 'fieldDuties'), where('homeDistrictOfficeId', '==', myOfficeId), where('status', '==', 'approved')))
+          : Promise.resolve(emptySnap)
+      ];
+
+      const [uSnaps, aSnaps, hSnap, lSnaps, fSnaps] = await Promise.all([
+        Promise.all(userQueries),
+        Promise.all(attQueries),
+        getDocs(query(collection(db, 'holidays'), where('type', 'in', ['government', 'national', 'optional']))),
+        Promise.all(leaveQueries),
+        Promise.all(fieldQueries)
       ]);
 
-      const mergeById = (s1, s2, fallbackUid = false) => {
+      const mergeSnapsById = (snaps, fallbackUid = false) => {
         const map = new Map();
-        for (const d of [...s1.docs, ...s2.docs]) {
-          const data = d.data();
-          map.set(d.id, fallbackUid ? { uid: d.id, id: d.id, ...data } : { id: d.id, ...data });
+        for (const snap of snaps) {
+          for (const d of snap.docs) {
+            const data = d.data();
+            map.set(d.id, fallbackUid ? { uid: d.id, id: d.id, ...data } : { id: d.id, ...data });
+          }
         }
         return Array.from(map.values());
       };
 
-      setStaffList(mergeById(uDist, uOwn, true));
-      setAttendanceDocs(mergeById(aDist, aOwn));
+      setStaffList(mergeSnapsById(uSnaps, true));
+      setAttendanceDocs(mergeSnapsById(aSnaps));
       setHolidays(hSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      setApprovedLeaves(mergeById(lDist, lOwn));
-      setApprovedFieldDuties(mergeById(fDist, fOwn));
+      setApprovedLeaves(mergeSnapsById(lSnaps));
+      setApprovedFieldDuties(mergeSnapsById(fSnaps));
     } catch (err) {
       setErrorMsg('নিষ্পত্তি ড্যাশবোর্ডের তথ্য লোড করা যায়নি।');
       handleFirestoreError(err, OperationType.LIST, 'district-settlement');
     } finally {
       setLoading(false);
     }
-  }, [myOfficeId, filters.date, permissionScope]);
+  }, [myOfficeId, filters.date, permissionScope, can]);
 
   useEffect(() => {
     loadData(filters.date);
@@ -174,6 +245,9 @@ export default function DistrictSettlementPage() {
         if (emp.joiningDate && dateStr < emp.joiningDate) continue;
         if (emp.status === 'resigned' && emp.resignationDate && dateStr > emp.resignationDate) continue;
         if (emp.status === 'resigned' && !emp.resignationDate) continue;
+
+        const workingOfficeId = emp.attachedOfficeId || emp.officeId || '';
+        if (!managedOfficeIds.has(workingOfficeId)) continue;
         if (recordedUids.has(emp.uid)) continue;
 
         const hasLeave = approvedLeaves.some(
@@ -186,6 +260,11 @@ export default function DistrictSettlementPage() {
         );
         if (hasField) continue;
 
+        const workingDistrictId =
+          computeDistrictOfficeId(workingOfficeId) || emp.districtOfficeId || myOfficeId;
+        const homeDistrictId =
+          emp.districtOfficeId || computeDistrictOfficeId(emp.officeId) || '';
+
         items.push({
           key: `proposed_${emp.uid}_${dateStr}`,
           id: `${emp.uid}_${dateStr}`,
@@ -193,8 +272,10 @@ export default function DistrictSettlementPage() {
           role: emp.role,
           employeeName: emp.name || emp.email || emp.uid,
           designation: emp.designation,
-          officeId: emp.officeId,
-          districtOfficeId: emp.districtOfficeId || myOfficeId,
+          officeId: workingOfficeId,
+          districtOfficeId: workingDistrictId,
+          homeOfficeId: emp.officeId,
+          homeDistrictOfficeId: homeDistrictId,
           profilePhotoPath: emp.profilePhotoPath || '',
           date: dateStr,
           initialStatus: 'Absent (প্রস্তাবিত)',
@@ -207,11 +288,28 @@ export default function DistrictSettlementPage() {
     }
 
     return items.sort((a, b) => (a.employeeName || '').localeCompare(b.employeeName || ''));
-  }, [attendanceDocs, staffList, holidays, approvedLeaves, approvedFieldDuties, filters.date, myOfficeId]);
+  }, [
+    attendanceDocs,
+    staffList,
+    holidays,
+    approvedLeaves,
+    approvedFieldDuties,
+    filters.date,
+    myOfficeId,
+    managedOfficeIds,
+    computeDistrictOfficeId
+  ]);
 
   const filteredItems = useMemo(() => {
     return combinedItems.filter((item) => {
-      if (filters.officeId !== 'all' && item.officeId !== filters.officeId) return false;
+      if (filters.officeId !== 'all') {
+        const matchesOffice = item.isProposedAbsent
+          ? item.officeId === filters.officeId
+          : item.officeId === filters.officeId ||
+            item.homeOfficeId === filters.officeId ||
+            item.checkOutOfficeId === filters.officeId;
+        if (!matchesOffice) return false;
+      }
       if (filters.initialStatus !== 'all' && item.initialStatus !== filters.initialStatus) return false;
       if (filters.unsettledOnly && item.settled) return false;
       return true;
@@ -292,6 +390,8 @@ export default function DistrictSettlementPage() {
         designation: item.designation || '',
         officeId: item.officeId,
         districtOfficeId: item.districtOfficeId || myOfficeId,
+        homeOfficeId: item.homeOfficeId || item.officeId,
+        homeDistrictOfficeId: item.homeDistrictOfficeId || item.districtOfficeId || myOfficeId,
         date: item.date,
         isFieldDuty: false,
         checkIn: null,
@@ -415,10 +515,17 @@ export default function DistrictSettlementPage() {
                     className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
                       activeChargeType === 'additional'
                         ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                        : activeChargeType === 'acting'
+                        ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
                         : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
                     }`}
                   >
-                    {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'} · {activeOffice.name}
+                    {activeChargeType === 'additional'
+                      ? 'অতিরিক্ত দায়িত্ব'
+                      : activeChargeType === 'acting'
+                      ? 'চলতি দায়িত্ব'
+                      : 'মূল দায়িত্ব'}{' '}
+                    · {activeOffice.name}
                   </span>
                 )}
               </div>
@@ -523,6 +630,11 @@ export default function DistrictSettlementPage() {
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
             {filteredItems.map((item) => {
               const settleable = canSettleItem(item);
+              const staff = staffByUid.get(item.uid);
+              const homeRefOfficeId = item.homeOfficeId || staff?.officeId || '';
+              const isOtherOfficeAttendance =
+                !item.isProposedAbsent &&
+                ((homeRefOfficeId && item.officeId !== homeRefOfficeId) || !managedOfficeIds.has(item.officeId));
               return (
                 <div
                   key={item.key}
@@ -543,17 +655,31 @@ export default function DistrictSettlementPage() {
                     className="flex-1 min-w-0 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                   >
                     <div className="min-w-0">
-                      <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-                        {item.employeeName}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                          {item.employeeName}
+                        </span>
+                        {isOtherOfficeAttendance && (
+                          <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-900/40 text-sky-800 dark:text-sky-300">
+                            অন্য অফিসে উপস্থিত: {officeName(item.officeId)}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                        {officeName(item.officeId)} · {item.designation || 'Staff'}
+                        {officeName(item.officeId)}
+                        {item.homeOfficeId && item.homeOfficeId !== item.officeId
+                          ? ` (মূল কর্মস্থল: ${officeName(item.homeOfficeId)})`
+                          : ''}{' '}
+                        · {item.designation || 'Staff'}
                       </div>
                       <div className="text-[11px] font-mono-tabular text-slate-500 dark:text-slate-400 mt-0.5">
                         {!item.isProposedAbsent ? (
                           <>
                             In: {item.checkIn ? formatDhakaTime(item.checkIn.time) : '—'} · Out:{' '}
                             {item.checkOut ? formatDhakaTime(item.checkOut.time) : '—'}
+                            {item.checkOutOfficeId && item.checkOutOfficeId !== item.officeId && (
+                              <span> · প্রস্থান: {officeName(item.checkOutOfficeId)}</span>
+                            )}
                             {item.photoDeleted && <span> · ছবি মুছে গেছে</span>}
                           </>
                         ) : (
@@ -589,7 +715,14 @@ export default function DistrictSettlementPage() {
                     {activeItem.employeeName}
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    {officeName(activeItem.officeId)} · {activeItem.date}
+                    {officeName(activeItem.officeId)}
+                    {activeItem.homeOfficeId && activeItem.homeOfficeId !== activeItem.officeId
+                      ? ` (মূল কর্মস্থল: ${officeName(activeItem.homeOfficeId)})`
+                      : ''}
+                    {activeItem.checkOutOfficeId && activeItem.checkOutOfficeId !== activeItem.officeId
+                      ? ` · প্রস্থান অফিস: ${officeName(activeItem.checkOutOfficeId)}`
+                      : ''}{' '}
+                    · {activeItem.date}
                   </p>
                 </div>
                 <button

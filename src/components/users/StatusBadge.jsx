@@ -8,7 +8,7 @@ import {
   UserCheck,
   UserX
 } from 'lucide-react';
-import { ROLES, getRoleLabel as resolveRoleLabel, rankOf } from '../../lib/permissions.js';
+import { getRoleLabel as resolveRoleLabel, getRoleList, getRoleMeta, rankOf } from '../../lib/permissions.js';
 
 const STATUS_LABELS = {
   active: 'Active',
@@ -43,13 +43,17 @@ export default function StatusBadge({ kind = 'status', value }) {
   let Icon = null;
 
   if (kind === 'role') {
-    label = getRoleLabel(normalized);
-    const rank = rankOf(normalized);
-    if (rank >= ROLES.super_admin.rank) {
+    label = getRoleLabel(value);
+    const meta = getRoleMeta(value);
+    const rank = rankOf(value);
+    const allRoles = getRoleList();
+    const maxRank = allRoles.reduce((m, r) => Math.max(m, r.rank || 0), 0);
+    const midThreshold = maxRank > 0 ? Math.max(20, Math.round(maxRank * 0.4)) : 40;
+    if (meta?.isSuper || (maxRank > 0 && rank >= maxRank)) {
       classes =
         'bg-[#0b6b4f]/10 dark:bg-[#4fd1a1]/15 text-[#0b6b4f] dark:text-[#4fd1a1] border-[#0b6b4f]/20 dark:border-[#4fd1a1]/30';
       Icon = ShieldCheck;
-    } else if (rank >= ROLES.unfeo.rank) {
+    } else if (rank >= midThreshold) {
       classes =
         'bg-slate-100 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-700';
       Icon = UserCog;

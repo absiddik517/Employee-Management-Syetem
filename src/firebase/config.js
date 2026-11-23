@@ -38,8 +38,8 @@ export function withTimeout(promise, ms = 20000, errorMessage = 'Operation timed
   });
 }
 
-// Secondary Firebase app instance used strictly when super_admin registers or inspects a user
-// so the super_admin's active auth session is never replaced.
+// Secondary Firebase app instance used when an administrator creates or inspects a user
+// so the caller's active auth session is never replaced.
 export function getSecondaryAuthApp() {
   const name = `secondary-admin-creator-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const existing = getApps().find((a) => a.name === name);

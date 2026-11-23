@@ -1,7 +1,7 @@
 export const OFFICE_LEVEL_LABELS = {
-  head: 'Head office (Director General)',
-  district: 'District office (Assistant Director)',
-  upazila: 'Upazila office (UNFEO)'
+  head: 'Head office',
+  district: 'District office',
+  upazila: 'Upazila office'
 };
 
 export const OFFICE_LEVEL_SHORT = {

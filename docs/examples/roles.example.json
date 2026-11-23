@@ -1,0 +1,183 @@
+[
+  {
+    "key": "administrator",
+    "label": "Administrator",
+    "description": "Technical administrator for offices, users, holidays, roles, settings, and photo purge.",
+    "rank": 100,
+    "isSuper": true,
+    "chargeEligible": false,
+    "actingEligible": false,
+    "homeRoute": "admin",
+    "permissions": {
+      "attendance.view": "all",
+      "attendance.photo.view": "all",
+      "attendance.photo.purge": "all",
+      "leave.view": "all",
+      "report.view": "all",
+      "user.view": "all",
+      "user.create": "all",
+      "user.approve": "all",
+      "user.resetDevice": "all",
+      "user.edit": "all",
+      "user.role.assign": "all",
+      "user.delete": "all",
+      "office.manage": "all",
+      "assignment.manage": "all",
+      "holiday.manage": "all",
+      "settings.manage": "all",
+      "audit.view": "all"
+    },
+    "review": {
+      "leave": {},
+      "fieldduty": {},
+      "settle": {}
+    }
+  },
+  {
+    "key": "director_general",
+    "label": "Director General",
+    "description": "Organization-wide read oversight and Assistant Director leave approval.",
+    "rank": 90,
+    "isSuper": false,
+    "chargeEligible": true,
+    "actingEligible": false,
+    "homeRoute": "head-office",
+    "permissions": {
+      "attendance.checkin": "self",
+      "attendance.view": "all",
+      "leave.apply": "self",
+      "leave.view": "all",
+      "fieldduty.apply": "self",
+      "report.view": "all",
+      "user.view": "all",
+      "audit.view": "all"
+    },
+    "review": {
+      "leave": {
+        "assistant_director": "all"
+      },
+      "fieldduty": {},
+      "settle": {}
+    }
+  },
+  {
+    "key": "head_office_officer",
+    "label": "Head Office Officer",
+    "description": "Head office officer with organization-wide read oversight on attendance, leaves, reports, and staff.",
+    "rank": 80,
+    "isSuper": false,
+    "chargeEligible": true,
+    "actingEligible": false,
+    "homeRoute": "head-office",
+    "permissions": {
+      "attendance.checkin": "self",
+      "attendance.view": "all",
+      "leave.apply": "self",
+      "leave.view": "all",
+      "fieldduty.apply": "self",
+      "report.view": "all",
+      "user.view": "all"
+    },
+    "review": {
+      "leave": {},
+      "fieldduty": {},
+      "settle": {}
+    }
+  },
+  {
+    "key": "assistant_director",
+    "label": "Assistant Director",
+    "description": "District head: manages district and child upazila offices, settles attendance, approves UNFEO & district staff leave, and manages subtree staff.",
+    "rank": 60,
+    "isSuper": false,
+    "chargeEligible": true,
+    "actingEligible": true,
+    "homeRoute": "district",
+    "permissions": {
+      "attendance.checkin": "self",
+      "attendance.view": "subtree",
+      "attendance.photo.view": "subtree",
+      "leave.apply": "self",
+      "leave.view": "subtree",
+      "fieldduty.apply": "self",
+      "report.create": "subtree",
+      "report.view": "subtree",
+      "user.view": "subtree",
+      "user.create": "subtree",
+      "user.approve": "subtree",
+      "user.resetDevice": "subtree",
+      "user.edit": "subtree",
+      "user.role.assign": "subtree",
+      "office.child.manage": "subtree",
+      "assignment.manage": "subtree",
+      "audit.view": "subtree"
+    },
+    "review": {
+      "leave": {
+        "employee": "office",
+        "unfeo": "subtree"
+      },
+      "fieldduty": {
+        "employee": "subtree",
+        "unfeo": "subtree"
+      },
+      "settle": {
+        "employee": "subtree",
+        "unfeo": "subtree"
+      }
+    }
+  },
+  {
+    "key": "unfeo",
+    "label": "UNFEO",
+    "description": "Upazila office head: approves office employee leave, verifies registrations/devices, and creates office reports.",
+    "rank": 40,
+    "isSuper": false,
+    "chargeEligible": true,
+    "actingEligible": true,
+    "homeRoute": "office-head",
+    "permissions": {
+      "attendance.checkin": "self",
+      "attendance.view": "office",
+      "attendance.photo.view": "office",
+      "leave.apply": "self",
+      "leave.view": "office",
+      "fieldduty.apply": "self",
+      "report.create": "office",
+      "report.view": "office",
+      "user.view": "office",
+      "user.approve": "office",
+      "user.resetDevice": "office"
+    },
+    "review": {
+      "leave": {
+        "employee": "office"
+      },
+      "fieldduty": {},
+      "settle": {}
+    }
+  },
+  {
+    "key": "employee",
+    "label": "Employee",
+    "description": "Office staff: daily check-in/out, leave/field duty applications, and own-office roster/attendance/leave view.",
+    "rank": 10,
+    "isSuper": false,
+    "chargeEligible": true,
+    "actingEligible": false,
+    "homeRoute": "employee",
+    "permissions": {
+      "attendance.checkin": "self",
+      "attendance.view": "office",
+      "leave.apply": "self",
+      "leave.view": "office",
+      "fieldduty.apply": "self",
+      "user.view": "office"
+    },
+    "review": {
+      "leave": {},
+      "fieldduty": {},
+      "settle": {}
+    }
+  }
+]

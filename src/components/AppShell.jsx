@@ -26,7 +26,6 @@ import {
 } from 'lucide-react';
 import BottomSheet from './users/BottomSheet.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { ROLES } from '../lib/permissions.js';
 import { getTodayDhaka, formatDisplayDate } from '../utils/dhakaTime.js';
 import { useTheme } from '../utils/theme.js';
 
@@ -42,18 +41,21 @@ const ROUTE_TITLES = {
   '/district/reports': 'Monthly Reports',
   '/head-office': 'Head Office Oversight',
   '/audit': 'Audit Trail',
-  '/admin': 'Super Admin',
+  '/admin': 'Admin',
   '/admin/offices': 'Offices',
+  '/upazila-offices': 'উপজেলা অফিস',
   '/admin/users': 'Users & Devices',
-  '/admin/additional-charge': 'Additional Charge',
+  '/assignments': 'দায়িত্ব ও সংযুক্তি',
+  '/admin/additional-charge': 'দায়িত্ব ও সংযুক্তি',
   '/admin/holidays': 'Holidays',
-  '/admin/permissions': 'Role Permissions'
+  '/admin/permissions': 'Role Manager'
 };
 
 export default function AppShell({ title, showThemeToggle = false, children }) {
   const {
     profile,
-    normalizedRole,
+    isBootstrapSuperAdmin,
+    roleMeta,
     roleLabel,
     can,
     permissionScope,
@@ -105,6 +107,42 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
   const currentTitle = title || ROUTE_TITLES[location.pathname] || 'EMS';
   const todayDisplay = useMemo(() => formatDisplayDate(getTodayDhaka()), []);
 
+  const navRoleFlags = useMemo(() => {
+    const reportScope = permissionScope('report.view');
+    const reportCreateScope = permissionScope('report.create');
+    const isTechnicalAdmin =
+      isBootstrapSuperAdmin ||
+      Boolean(roleMeta?.isSuper) ||
+      can('settings.manage') ||
+      can('office.manage');
+    const isSubtreeManager = !isTechnicalAdmin && can('attendance.settle');
+    const isOfficePortal =
+      !isTechnicalAdmin &&
+      !isSubtreeManager &&
+      (reportCreateScope === 'office' || (can('leave.review') && reportScope === 'office'));
+    const isAllOversight =
+      !isTechnicalAdmin &&
+      !isSubtreeManager &&
+      !isOfficePortal &&
+      (reportScope === 'all' || permissionScope('attendance.view') === 'all');
+    const hasUserManagementPerm =
+      can('user.create') ||
+      can('user.approve') ||
+      can('user.resetDevice') ||
+      can('user.edit') ||
+      can('user.role.assign') ||
+      can('user.delete');
+    const isDirectoryRole = !isTechnicalAdmin || can('user.view');
+    return {
+      isTechnicalAdmin,
+      isSubtreeManager,
+      isOfficePortal,
+      isAllOversight,
+      hasUserManagementPerm,
+      isDirectoryRole
+    };
+  }, [isBootstrapSuperAdmin, roleMeta, can, permissionScope]);
+
   const navItems = useMemo(() => {
     const items = [];
     const seen = new Set();
@@ -114,27 +152,14 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       items.push(item);
     };
 
-    const reportScope = permissionScope('report.view');
-    const isTechnicalAdmin =
-      normalizedRole === ROLES.super_admin.key || can('settings.manage') || can('office.manage');
-    const isSubtreeManager =
-      normalizedRole === ROLES.assistant_director.key || (!isTechnicalAdmin && can('attendance.settle'));
-    const isOfficePortal =
-      normalizedRole === ROLES.unfeo.key || (!isTechnicalAdmin && permissionScope('report.create') === 'office');
-    const isAllOversight = !isTechnicalAdmin && !isSubtreeManager && !isOfficePortal && reportScope === 'all';
-    const hasUserManagementPerm =
-      can('user.approve') ||
-      can('user.resetDevice') ||
-      can('user.edit') ||
-      can('user.role.assign') ||
-      can('user.delete');
-    const isDirectoryRole = [
-      ROLES.employee.key,
-      ROLES.unfeo.key,
-      ROLES.assistant_director.key,
-      ROLES.head_office_officer.key,
-      ROLES.director_general.key
-    ].includes(normalizedRole);
+    const {
+      isTechnicalAdmin,
+      isSubtreeManager,
+      isOfficePortal,
+      isAllOversight,
+      hasUserManagementPerm,
+      isDirectoryRole
+    } = navRoleFlags;
 
     if (isTechnicalAdmin) {
       if (can('settings.manage') || can('attendance.photo.purge')) {
@@ -146,14 +171,14 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       if (can('user.view')) {
         pushItem({ to: '/admin/users', label: 'Users & Devices', shortLabel: 'User', Icon: Users });
       }
-      if (can('user.edit') && permissionScope('user.edit') === 'all') {
-        pushItem({ to: '/admin/additional-charge', label: 'Additional Charge', shortLabel: 'Charge', Icon: Briefcase });
+      if (can('assignment.manage')) {
+        pushItem({ to: '/assignments', label: 'দায়িত্ব ও সংযুক্তি', shortLabel: 'Charge', Icon: Briefcase });
       }
       if (can('holiday.manage')) {
         pushItem({ to: '/admin/holidays', label: 'Holidays', shortLabel: 'Holidays', Icon: CalendarOff });
       }
       if (can('settings.manage')) {
-        pushItem({ to: '/admin/permissions', label: 'Role Permissions', shortLabel: 'Permission', Icon: ShieldCheck });
+        pushItem({ to: '/admin/permissions', label: 'Role Manager', shortLabel: 'Permission', Icon: ShieldCheck });
       }
       if (can('audit.view')) {
         pushItem({ to: '/audit', label: 'Audit Trail', shortLabel: 'Audit', Icon: History });
@@ -203,15 +228,20 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       }
     }
 
-    // Dynamic permission-driven extras for any role granted additional capabilities
+    // Dynamic permission-driven extras for any role
     if (can('office.manage')) {
       pushItem({ to: '/admin/offices', label: 'Offices', shortLabel: 'Office', Icon: Building2 });
+    } else if (can('office.child.manage')) {
+      pushItem({ to: '/upazila-offices', label: 'উপজেলা অফিস', shortLabel: 'Upazila', Icon: Building2 });
+    }
+    if (can('assignment.manage')) {
+      pushItem({ to: '/assignments', label: 'দায়িত্ব ও সংযুক্তি', shortLabel: 'Charge', Icon: Briefcase });
     }
     if (can('holiday.manage')) {
       pushItem({ to: '/admin/holidays', label: 'Holidays', shortLabel: 'Holidays', Icon: CalendarOff });
     }
     if (can('settings.manage')) {
-      pushItem({ to: '/admin/permissions', label: 'Role Permissions', shortLabel: 'Permission', Icon: ShieldCheck });
+      pushItem({ to: '/admin/permissions', label: 'Role Manager', shortLabel: 'Permission', Icon: ShieldCheck });
     }
     if (can('attendance.settle')) {
       pushItem({ to: '/district', label: 'Settlement', shortLabel: 'Settle', Icon: CheckSquare });
@@ -257,7 +287,7 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
     }
 
     return items;
-  }, [normalizedRole, can, permissionScope]);
+  }, [navRoleFlags, can, permissionScope]);
 
   const { mobilePrimaryItems, overflowNavItems, isOverflowRouteActive } = useMemo(() => {
     const byPath = new Map(navItems.map((item) => [item.to, item]));
@@ -272,17 +302,14 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       });
     };
 
-    if (normalizedRole === ROLES.super_admin.key) {
-      // 1. Super admin: Office, User, Home, Permission, More
+    const { isTechnicalAdmin, isSubtreeManager, isOfficePortal, isAllOversight } = navRoleFlags;
+
+    if (isTechnicalAdmin) {
       pick('/admin/offices', 'Office', Building2);
       pick('/admin/users', 'User', Users);
       pick('/admin', 'Home', LayoutDashboard);
       pick('/admin/permissions', 'Permission', ShieldCheck);
-    } else if (
-      normalizedRole === ROLES.assistant_director.key ||
-      normalizedRole === ROLES.unfeo.key
-    ) {
-      // 2. Assistant Director, UNFEO: Employee (directory), Application, Dashboard, Settle (hide if unavailable), More
+    } else if (isSubtreeManager || isOfficePortal) {
       pick('/employees', 'Employee', Users);
       if (byPath.has('/district/approvals')) {
         pick('/district/approvals', 'Application', ClipboardCheck);
@@ -290,7 +317,7 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
         pick('/employee/requests', 'Application', FileText);
       }
 
-      if (normalizedRole === ROLES.unfeo.key) {
+      if (isOfficePortal) {
         if (byPath.has('/office-head')) {
           pick('/office-head', 'Dashboard', LayoutDashboard);
         } else if (byPath.has('/district/reports')) {
@@ -307,27 +334,24 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       if (can('attendance.settle')) {
         pick('/district', 'Settle', CheckSquare);
       }
-    } else if (
-      normalizedRole === ROLES.director_general.key ||
-      normalizedRole === ROLES.head_office_officer.key
-    ) {
+    } else if (isAllOversight) {
       pick('/employees', 'Employee', Users);
       pick('/head-office', 'Dashboard', BarChart3);
       pick('/audit', 'Audit', History);
       pick('/employee', 'Today', Clock);
     } else {
-      // 3. Employee: Employee (directory), History, Today, Application, More
       pick('/employees', 'Employee', Users);
       pick('/employee/history', 'History', CalendarDays);
       pick('/employee', 'Today', Clock);
       pick('/employee/requests', 'Application', FileText);
     }
 
-    // Fallback: if dynamic permission overrides removed standard tabs, fill up to 4 from remaining navItems
-    if (picked.length === 0) {
+    if (picked.length < 2) {
       for (const item of navItems) {
         if (picked.length >= 4) break;
-        picked.push(item);
+        if (!picked.some((p) => p.to === item.to)) {
+          picked.push(item);
+        }
       }
     }
 
@@ -340,7 +364,7 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
       overflowNavItems: overflow,
       isOverflowRouteActive: overflowActive
     };
-  }, [navItems, normalizedRole, can, location.pathname]);
+  }, [navItems, navRoleFlags, can, location.pathname]);
 
   const handleLogout = async () => {
     setMobileMenuOpen(false);
@@ -348,7 +372,18 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
     navigate('/login');
   };
 
-  const chargeBadgeLabel = activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব';
+  const chargeBadgeLabel =
+    activeChargeType === 'acting'
+      ? 'চলতি দায়িত্ব'
+      : activeChargeType === 'additional'
+      ? 'অতিরিক্ত দায়িত্ব'
+      : 'মূল দায়িত্ব';
+  const chargeBadgeTextClass =
+    activeChargeType === 'acting'
+      ? 'text-sky-700 dark:text-sky-300'
+      : activeChargeType === 'additional'
+      ? 'text-amber-700 dark:text-amber-300'
+      : 'text-[#0b6b4f] dark:text-[#4fd1a1]';
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col lg:flex-row transition-colors">
@@ -390,13 +425,7 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
               <div className="mt-1.5 space-y-0.5">
                 <div className="truncate font-medium text-slate-700 dark:text-slate-200">{userOffice.name}</div>
                 {hasMultipleOffices && (
-                  <div
-                    className={`text-[11px] font-semibold ${
-                      activeChargeType === 'additional'
-                        ? 'text-amber-700 dark:text-amber-300'
-                        : 'text-[#0b6b4f] dark:text-[#4fd1a1]'
-                    }`}
-                  >
+                  <div className={`text-[11px] font-semibold ${chargeBadgeTextClass}`}>
                     {chargeBadgeLabel} ({assignedOffices.length}টি অফিস)
                   </div>
                 )}
@@ -529,13 +558,7 @@ export default function AppShell({ title, showThemeToggle = false, children }) {
             <div className="min-w-0">
               <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                 সক্রিয় কর্মক্ষেত্র ·{' '}
-                <span
-                  className={
-                    activeChargeType === 'additional'
-                      ? 'text-amber-700 dark:text-amber-300'
-                      : 'text-[#0b6b4f] dark:text-[#4fd1a1]'
-                  }
-                >
+                <span className={chargeBadgeTextClass}>
                   {chargeBadgeLabel}
                 </span>
               </div>

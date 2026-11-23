@@ -14,6 +14,7 @@ import { getApproverHint, getRoleLabel } from '../../lib/permissions.js';
 export default function OfficeHeadPage() {
   const {
     profile,
+    offices,
     userOffice,
     activeOfficeId,
     activeOffice,
@@ -22,6 +23,11 @@ export default function OfficeHeadPage() {
     canReview
   } = useAuth();
   const { resolveStorageUrl, logAudit } = useData();
+
+  const officeName = useCallback(
+    (id) => offices.find((o) => o.id === id)?.name || id,
+    [offices]
+  );
 
   const myOfficeId = activeOfficeId || profile?.officeId || '';
   const currentOffice = activeOffice || userOffice;
@@ -79,29 +85,77 @@ export default function OfficeHeadPage() {
 
         if (canViewAttendance) {
           tasks.push(
-            getDocs(
-              query(
-                collection(db, 'attendance'),
-                where('officeId', '==', myOfficeId),
-                where('date', '==', dateStr)
+            Promise.all([
+              getDocs(
+                query(
+                  collection(db, 'attendance'),
+                  where('officeId', '==', myOfficeId),
+                  where('date', '==', dateStr)
+                )
+              ),
+              getDocs(
+                query(
+                  collection(db, 'attendance'),
+                  where('homeOfficeId', '==', myOfficeId),
+                  where('date', '==', dateStr)
+                )
+              ),
+              getDocs(
+                query(
+                  collection(db, 'attendance'),
+                  where('checkOutOfficeId', '==', myOfficeId),
+                  where('date', '==', dateStr)
+                )
               )
-            ).then((snap) => {
+            ]).then(([aInSnap, aHomeSnap, aOutSnap]) => {
+              const map = new Map();
+              for (const snap of [aInSnap, aHomeSnap, aOutSnap]) {
+                for (const d of snap.docs) {
+                  map.set(d.id, { id: d.id, ...d.data() });
+                }
+              }
               setRecords(
-                snap.docs
-                  .map((d) => ({ id: d.id, ...d.data() }))
-                  .sort((a, b) => (a.employeeName || '').localeCompare(b.employeeName || ''))
+                Array.from(map.values()).sort((a, b) =>
+                  (a.employeeName || '').localeCompare(b.employeeName || '')
+                )
               );
             })
           );
         }
 
         if (canViewUsers) {
+          const userQueries = [
+            getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId))),
+            getDocs(query(collection(db, 'users'), where('attachedOfficeId', '==', myOfficeId))),
+            getDocs(query(collection(db, 'users'), where('actingOfficeId', '==', myOfficeId)))
+          ];
+          if (myOfficeId === profile?.officeId || myOfficeId === profile?.actingOfficeId) {
+            userQueries.push(
+              getDocs(query(collection(db, 'users'), where('additionalOfficeIds', 'array-contains', myOfficeId)))
+            );
+          } else if (
+            Array.isArray(profile?.additionalOfficeIds) &&
+            profile.additionalOfficeIds.includes(myOfficeId)
+          ) {
+            userQueries.push(
+              getDocs(
+                query(
+                  collection(db, 'users'),
+                  where('additionalOfficeIds', 'array-contains-any', profile.additionalOfficeIds)
+                )
+              )
+            );
+          }
           tasks.push(
-            getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId))).then((snap) => {
+            Promise.all(userQueries).then((snaps) => {
+              const uMap = new Map();
+              for (const snap of snaps) {
+                for (const d of snap.docs) {
+                  uMap.set(d.id, { uid: d.id, id: d.id, ...d.data() });
+                }
+              }
               setStaffList(
-                snap.docs
-                  .map((d) => ({ uid: d.id, id: d.id, ...d.data() }))
-                  .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                Array.from(uMap.values()).sort((a, b) => (a.name || '').localeCompare(b.name || ''))
               );
             })
           );
@@ -241,12 +295,19 @@ export default function OfficeHeadPage() {
     setErrorMsg('');
     setFeedbackMsg('');
     try {
-      const [uSnap, aSnap] = await Promise.all([
+      const [uSnap, aSnap, aHomeSnap] = await Promise.all([
         getDocs(query(collection(db, 'users'), where('officeId', '==', myOfficeId))),
         getDocs(
           query(
             collection(db, 'attendance'),
             where('officeId', '==', myOfficeId),
+            where('settled', '==', true)
+          )
+        ),
+        getDocs(
+          query(
+            collection(db, 'attendance'),
+            where('homeOfficeId', '==', myOfficeId),
             where('settled', '==', true)
           )
         )
@@ -258,6 +319,14 @@ export default function OfficeHeadPage() {
       const settledRecords = aSnap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
         .filter((r) => r.date && r.date.startsWith(selectedMonth));
+      const otherOfficeRecords = aHomeSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((r) => r.date && r.date.startsWith(selectedMonth) && r.officeId !== myOfficeId);
+
+      const otherDaysByUid = new Map();
+      for (const rec of otherOfficeRecords) {
+        otherDaysByUid.set(rec.uid, (otherDaysByUid.get(rec.uid) || 0) + 1);
+      }
 
       const rowsMap = new Map();
       for (const emp of employees) {
@@ -269,7 +338,8 @@ export default function OfficeHeadPage() {
           onTime: 0,
           late: 0,
           leave: 0,
-          absent: 0
+          absent: 0,
+          otherOfficeDays: otherDaysByUid.get(empUid) || 0
         });
       }
 
@@ -284,7 +354,8 @@ export default function OfficeHeadPage() {
             onTime: 0,
             late: 0,
             leave: 0,
-            absent: 0
+            absent: 0,
+            otherOfficeDays: 0
           });
         }
         const row = rowsMap.get(rec.uid);
@@ -373,10 +444,16 @@ export default function OfficeHeadPage() {
                   className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${
                     activeChargeType === 'additional'
                       ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                      : activeChargeType === 'acting'
+                      ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
                       : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
                   }`}
                 >
-                  {activeChargeType === 'additional' ? 'অতিরিক্ত দায়িত্ব' : 'মূল দায়িত্ব'}
+                  {activeChargeType === 'additional'
+                    ? 'অতিরিক্ত দায়িত্ব'
+                    : activeChargeType === 'acting'
+                    ? 'চলতি দায়িত্ব'
+                    : 'মূল দায়িত্ব'}
                 </span>
               )}
             </div>
@@ -455,7 +532,7 @@ export default function OfficeHeadPage() {
                   Daily Attendance (Read-Only)
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  হাজিরা নিষ্পত্তির ক্ষমতা শুধুমাত্র জেলা সহকারী পরিচালকের।
+                  হাজিরা নিষ্পত্তির ক্ষমতা অনুমোদিত সেটেলমেন্ট কর্তৃপক্ষের।
                 </p>
               </div>
               <input
@@ -487,12 +564,23 @@ export default function OfficeHeadPage() {
                       className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                     >
                       <div>
-                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                          {rec.employeeName}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            {rec.employeeName}
+                          </span>
+                          {rec.officeId !== myOfficeId && (
+                            <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-900/40 text-sky-800 dark:text-sky-300">
+                              অন্য অফিসে উপস্থিত: {officeName(rec.officeId)}
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-slate-500 dark:text-slate-400">
-                          {rec.designation || 'Staff'} · In {rec.checkIn ? formatDhakaTime(rec.checkIn.time) : '—'} ·
-                          Out {rec.checkOut ? formatDhakaTime(rec.checkOut.time) : '—'}
+                          {rec.designation || 'Staff'} · In {rec.checkIn ? formatDhakaTime(rec.checkIn.time) : '—'}
+                          {rec.officeId !== myOfficeId ? ` (${officeName(rec.officeId)})` : ''} · Out{' '}
+                          {rec.checkOut ? formatDhakaTime(rec.checkOut.time) : '—'}
+                          {rec.checkOutOfficeId && rec.checkOutOfficeId !== rec.officeId
+                            ? ` (প্রস্থান: ${officeName(rec.checkOutOfficeId)})`
+                            : ''}
                         </div>
                         {rec.districtComment && (
                           <div className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -570,6 +658,9 @@ export default function OfficeHeadPage() {
                         </div>
                         <div className="text-xs text-slate-500 dark:text-slate-400 font-mono-tabular mt-0.5">
                           {item.startDate} to {item.endDate}
+                          {item.homeOfficeId && item.homeOfficeId !== item.officeId
+                            ? ` · মূল কর্মস্থল: ${officeName(item.homeOfficeId)}`
+                            : ''}
                         </div>
                         <div className="text-xs text-slate-700 dark:text-slate-300 mt-1">
                           <span className="font-semibold">{item.leaveType}:</span> {item.reason}
@@ -699,7 +790,14 @@ export default function OfficeHeadPage() {
                       {previewReport.rows.map((row) => (
                         <tr key={row.uid}>
                           <td className="py-2 pr-3 font-medium text-slate-900 dark:text-slate-100">
-                            {row.name} ({row.designation})
+                            <div>
+                              {row.name} ({row.designation})
+                            </div>
+                            {Number(row.otherOfficeDays) > 0 && (
+                              <div className="text-[11px] text-sky-700 dark:text-sky-400">
+                                অন্য অফিসে হাজিরা: {row.otherOfficeDays} দিন
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 px-2 text-right font-mono-tabular text-emerald-700 dark:text-emerald-400">
                             {row.onTime}

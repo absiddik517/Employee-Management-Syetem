@@ -1,5 +1,5 @@
-import React from 'react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import React, { useState } from 'react';
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
 
 import LoginPage from './pages/LoginPage.jsx';
@@ -24,14 +24,95 @@ import SuperAdminDashboardPage from './pages/admin/SuperAdminDashboardPage.jsx';
 import AdminOfficesPage from './pages/admin/AdminOfficesPage.jsx';
 import AdminUsersPage from './pages/admin/AdminUsersPage.jsx';
 import AdminHolidaysPage from './pages/admin/AdminHolidaysPage.jsx';
-import AdminAdditionalChargePage from './pages/admin/AdminAdditionalChargePage.jsx';
+import AssignmentsManagePage from './pages/AssignmentsManagePage.jsx';
 import AdminRolePermissionsPage from './pages/admin/AdminRolePermissionsPage.jsx';
+import ChildOfficesPage from './pages/ChildOfficesPage.jsx';
 import EmployeeDirectoryPage from './pages/EmployeeDirectoryPage.jsx';
 import AuditLogPage from './pages/AuditLogPage.jsx';
 
+function UnassignedRoleScreen() {
+  const { firebaseUser, profile, roles, fetchPublicBootstrap, loadUserProfile, logout } = useAuth();
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (!firebaseUser?.uid || refreshing) return;
+    setRefreshing(true);
+    try {
+      await fetchPublicBootstrap();
+      await loadUserProfile(firebaseUser.uid);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const rawRole = typeof profile?.role === 'string' ? profile.role.trim() : '';
+
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col justify-center px-4 py-8">
+      <div className="w-full max-w-md mx-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-5">
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+            Access Pending Configuration
+          </div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100 font-display leading-snug">
+            আপনার রোল নির্ধারিত হয়নি, প্রশাসকের সাথে যোগাযোগ করুন
+          </h1>
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            {roles.length === 0
+              ? 'সিস্টেমে এখনো কোনো রোল তৈরি করা হয়নি। প্রশাসক রোল কনফিগার করার পর পুনরায় চেষ্টা করুন।'
+              : rawRole
+              ? `আপনার অ্যাকাউন্টের "${rawRole}" রোলটি বর্তমানে সক্রিয় রোল তালিকায় পাওয়া যায়নি। প্রশাসকের সাথে যোগাযোগ করুন।`
+              : 'আপনার অ্যাকাউন্টে এখনো কোনো কার্যকর রোল যুক্ত করা হয়নি।'}
+          </p>
+        </div>
+
+        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700 text-xs space-y-1 text-slate-700 dark:text-slate-300">
+          <div className="font-semibold text-slate-900 dark:text-slate-100 text-sm">
+            {profile?.name || firebaseUser?.email || 'User'}
+          </div>
+          <div>{firebaseUser?.email || profile?.email || '—'}</div>
+          <div className="font-mono-tabular text-slate-500 dark:text-slate-400 break-all">
+            UID: {firebaseUser?.uid || profile?.uid || '—'}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            disabled={refreshing}
+            onClick={handleRefresh}
+            className="flex-1 min-h-[44px] px-4 py-2 rounded-xl bg-[#0b6b4f] hover:bg-[#09553f] dark:bg-[#4fd1a1] dark:text-slate-950 text-white text-sm font-semibold disabled:opacity-60 transition-colors"
+          >
+            {refreshing ? 'যাচাই হচ্ছে...' : 'পুনরায় যাচাই করুন'}
+          </button>
+          <button
+            type="button"
+            onClick={() => logout()}
+            className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GuestRoute({ children }) {
-  const { isAuthenticated, firebaseUser, needsProfileSetup, profile, getRoleHomePath } = useAuth();
+  const {
+    isAuthenticated,
+    isApproved,
+    isBootstrapSuperAdmin,
+    roleMeta,
+    firebaseUser,
+    needsProfileSetup,
+    profile,
+    getRoleHomePath
+  } = useAuth();
   if (isAuthenticated) {
+    if (isApproved && !isBootstrapSuperAdmin && !roleMeta) {
+      return <UnassignedRoleScreen />;
+    }
     return <Navigate to={getRoleHomePath(profile)} replace />;
   }
   if (firebaseUser && needsProfileSetup) {
@@ -41,8 +122,20 @@ function GuestRoute({ children }) {
 }
 
 function MissingProfileRoute({ children }) {
-  const { isAuthenticated, firebaseUser, needsProfileSetup, profile, getRoleHomePath } = useAuth();
+  const {
+    isAuthenticated,
+    isApproved,
+    isBootstrapSuperAdmin,
+    roleMeta,
+    firebaseUser,
+    needsProfileSetup,
+    profile,
+    getRoleHomePath
+  } = useAuth();
   if (isAuthenticated) {
+    if (isApproved && !isBootstrapSuperAdmin && !roleMeta) {
+      return <UnassignedRoleScreen />;
+    }
     return <Navigate to={getRoleHomePath(profile)} replace />;
   }
   if (!firebaseUser || !needsProfileSetup) {
@@ -60,11 +153,14 @@ function ProtectedRoute({
   requireActiveOffice = false,
   children
 }) {
+  const location = useLocation();
   const {
     isAuthenticated,
     firebaseUser,
     needsProfileSetup,
     isApproved,
+    isBootstrapSuperAdmin,
+    roleMeta,
     profile,
     can,
     permissionScope,
@@ -82,6 +178,9 @@ function ProtectedRoute({
   if (!isApproved) {
     if (allowPending) return children;
     return <Navigate to="/pending" replace />;
+  }
+  if (isApproved && !isBootstrapSuperAdmin && !roleMeta) {
+    return <UnassignedRoleScreen />;
   }
   if (allowPending && isApproved) {
     return <Navigate to={getRoleHomePath(profile)} replace />;
@@ -102,9 +201,13 @@ function ProtectedRoute({
   }
 
   if (!permitted) {
+    const fallbackPath = getRoleHomePath(profile);
+    if (fallbackPath === location.pathname) {
+      return <UnassignedRoleScreen />;
+    }
     return (
       <Navigate
-        to={getRoleHomePath(profile)}
+        to={fallbackPath}
         replace
         state={{ unauthorizedToast: 'এই পৃষ্ঠাটি দেখার অনুমতি আপনার অ্যাকাউন্টে নেই।' }}
       />
@@ -119,9 +222,10 @@ function ProtectedRoute({
 }
 
 export default function App() {
-  const { authReady } = useAuth();
+  const { authReady, rolesReady, firebaseUser } = useAuth();
+  const appReady = authReady && (rolesReady || !firebaseUser);
 
-  if (!authReady) {
+  if (!appReady) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-6">
         <div className="text-sm font-medium text-slate-600 dark:text-slate-300">লোড হচ্ছে...</div>
@@ -192,7 +296,7 @@ export default function App() {
           }
         />
 
-        {/* Multi-Office Selection (Assistant Director & UNFEO with additional charges) */}
+        {/* Multi-Office Selection */}
         <Route
           path="/select-office"
           element={
@@ -202,7 +306,7 @@ export default function App() {
           }
         />
 
-        {/* Office-scoped Portal (UNFEO) */}
+        {/* Office-scoped Portal */}
         <Route
           path="/office-head"
           element={
@@ -212,7 +316,7 @@ export default function App() {
           }
         />
 
-        {/* Subtree-scoped Portal (Assistant Director) */}
+        {/* Subtree-scoped Settlement & Approvals */}
         <Route
           path="/district"
           element={
@@ -238,7 +342,7 @@ export default function App() {
           }
         />
 
-        {/* Oversight & DG AD Leave Review (DG & Head Office Officer) */}
+        {/* Oversight & Leave Review */}
         <Route
           path="/head-office"
           element={
@@ -248,7 +352,7 @@ export default function App() {
           }
         />
 
-        {/* Employee Directory (own office & subordinate offices — not user management) */}
+        {/* Employee Directory (permission-scoped roster) */}
         <Route
           path="/employees"
           element={
@@ -258,7 +362,7 @@ export default function App() {
           }
         />
 
-        {/* Users & Devices (user management across Super Admin, AD, UNFEO) */}
+        {/* Users & Devices (permission-scoped user management) */}
         <Route
           path="/admin/users"
           element={
@@ -268,7 +372,17 @@ export default function App() {
           }
         />
 
-        {/* Audit Trail (Super Admin all, DG all, AD subtree) */}
+        {/* Child Upazila Office Management */}
+        <Route
+          path="/upazila-offices"
+          element={
+            <ProtectedRoute permission="office.child.manage">
+              <ChildOfficesPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Audit Trail */}
         <Route
           path="/audit"
           element={
@@ -278,7 +392,7 @@ export default function App() {
           }
         />
 
-        {/* Technical Administration (Super Admin) */}
+        {/* System Administration */}
         <Route
           path="/admin"
           element={
@@ -296,13 +410,14 @@ export default function App() {
           }
         />
         <Route
-          path="/admin/additional-charge"
+          path="/assignments"
           element={
-            <ProtectedRoute permission="user.edit" requiredScope="all">
-              <AdminAdditionalChargePage />
+            <ProtectedRoute permission="assignment.manage">
+              <AssignmentsManagePage />
             </ProtectedRoute>
           }
         />
+        <Route path="/admin/additional-charge" element={<Navigate to="/assignments" replace />} />
         <Route
           path="/admin/holidays"
           element={

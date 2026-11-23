@@ -5,10 +5,12 @@ import { SubmissionTasksInline, SubmissionTasksFeedback } from '../SubmissionTas
 import { useAuth } from '../../context/AuthContext.jsx';
 import { getTodayDhaka } from '../../utils/dhakaTime.js';
 import {
-  ROLES,
+  assignableRoles as getAssignableRoles,
+  getAuthorityOfficeIds,
+  getDefaultRoleKey,
   getPermissionScope,
   getRoleLabel,
-  getUserOfficeScopeIds,
+  getRoleMeta,
   normalizeRole
 } from '../../lib/permissions.js';
 
@@ -28,6 +30,8 @@ const LABEL_CLASS = 'block text-xs font-semibold text-slate-700 dark:text-slate-
 const ERROR_CLASS = 'mt-1 text-xs text-rose-600 dark:text-rose-400';
 
 function roleSupportsAdditionalCharge(role) {
+  const meta = getRoleMeta(role);
+  if (meta && !meta.chargeEligible) return false;
   const scope = getPermissionScope({ role, approvalStatus: 'approved', status: 'active' }, 'report.create');
   return scope === 'subtree' || scope === 'office';
 }
@@ -92,15 +96,34 @@ export default function UserFormSheet({
   onLinkSubmit,
   onEditSubmit
 }) {
-  const { effectiveAuthUser, assignableRoles, permissionScope, can } = useAuth();
+  const { effectiveAuthUser, roleRegistry, assignableRoles, permissionScope, can } = useAuth();
+  const createScope = permissionScope('user.create');
   const editScope = permissionScope('user.edit');
-  const canManageAdditionalCharge = editScope === 'all';
+  const canManageAdditionalCharge = permissionScope('assignment.manage') === 'all';
+
+  const assignableRolesForCreate = useMemo(
+    () => getAssignableRoles(effectiveAuthUser, roleRegistry, { permission: 'user.create' }),
+    [effectiveAuthUser, roleRegistry]
+  );
+
+  const activeScope = useMemo(() => {
+    if (mode === 'create') return createScope || '';
+    if (mode === 'link') return createScope === 'all' ? 'all' : editScope || '';
+    return editScope || '';
+  }, [mode, createScope, editScope]);
 
   const selectableOffices = useMemo(() => {
-    if (editScope !== 'subtree' || !effectiveAuthUser) return offices;
-    const scopeIds = new Set(getUserOfficeScopeIds(effectiveAuthUser));
-    return offices.filter((o) => scopeIds.has(o.id) || scopeIds.has(o.parentOfficeId));
-  }, [editScope, effectiveAuthUser, offices]);
+    if (!effectiveAuthUser) return [];
+    if (activeScope === 'all') return offices;
+    const scopeIds = new Set(getAuthorityOfficeIds(effectiveAuthUser));
+    if (activeScope === 'subtree') {
+      return offices.filter((o) => scopeIds.has(o.id) || scopeIds.has(o.parentOfficeId));
+    }
+    if (activeScope === 'office') {
+      return offices.filter((o) => scopeIds.has(o.id));
+    }
+    return [];
+  }, [activeScope, effectiveAuthUser, offices]);
 
   const roleOptionsForEdit = useMemo(() => {
     if (!user) return assignableRoles;
@@ -121,6 +144,14 @@ export default function UserFormSheet({
     });
   }, [assignableRoles.length, can, user]);
 
+  const defaultKey = getDefaultRoleKey();
+  const defaultSelectableRole = assignableRoles.some((r) => r.key === defaultKey) ? defaultKey : '';
+  const defaultCreateRole = useMemo(() => {
+    if (assignableRolesForCreate.some((r) => r.key === defaultKey)) return defaultKey;
+    if (assignableRolesForCreate.length === 1) return assignableRolesForCreate[0].key;
+    return '';
+  }, [assignableRolesForCreate, defaultKey]);
+
   // Create form state
   const [createForm, setCreateForm] = useState({
     name: '',
@@ -131,7 +162,7 @@ export default function UserFormSheet({
     password: '',
     officeId: '',
     additionalOfficeIds: [],
-    role: ROLES.employee.key,
+    role: defaultSelectableRole,
     joiningDate: getTodayDhaka()
   });
   const [createPhotoFile, setCreatePhotoFile] = useState(null);
@@ -148,7 +179,7 @@ export default function UserFormSheet({
     address: '',
     officeId: '',
     additionalOfficeIds: [],
-    role: ROLES.employee.key,
+    role: defaultSelectableRole,
     approvalStatus: 'approved',
     status: 'active',
     joiningDate: getTodayDhaka()
@@ -164,7 +195,7 @@ export default function UserFormSheet({
     additionalOfficeIds: [],
     address: '',
     joiningDate: getTodayDhaka(),
-    role: ROLES.employee.key,
+    role: defaultSelectableRole,
     status: 'active',
     resignationDate: '',
     approvalStatus: 'approved'
@@ -186,9 +217,9 @@ export default function UserFormSheet({
         address: '',
         email: '',
         password: '',
-        officeId: '',
+        officeId: selectableOffices.length === 1 ? selectableOffices[0].id : '',
         additionalOfficeIds: [],
-        role: ROLES.employee.key,
+        role: defaultCreateRole,
         joiningDate: getTodayDhaka()
       });
       setCreatePhotoFile(null);
@@ -204,7 +235,7 @@ export default function UserFormSheet({
         address: '',
         officeId: '',
         additionalOfficeIds: [],
-        role: ROLES.employee.key,
+        role: defaultSelectableRole,
         approvalStatus: 'approved',
         status: 'active',
         joiningDate: getTodayDhaka()
@@ -221,13 +252,13 @@ export default function UserFormSheet({
           : [],
         address: user.address || '',
         joiningDate: toDateInputValue(user.joiningDate, getTodayDhaka()),
-        role: normalizeRole(user.role) || ROLES.employee.key,
+        role: normalizeRole(user.role) || user.role || defaultSelectableRole,
         status: user.status || 'active',
         resignationDate: toDateInputValue(user.resignationDate, ''),
         approvalStatus: user.approvalStatus || 'pending'
       });
     }
-  }, [open, mode, user]);
+  }, [open, mode, user, defaultSelectableRole, defaultCreateRole, selectableOffices]);
 
   const clearFieldError = (field) => {
     if (errors[field]) {
@@ -272,6 +303,12 @@ export default function UserFormSheet({
       if (!createForm.password || createForm.password.length < 6) {
         nextErrors.password = 'Password must be at least 6 characters.';
       }
+      if (!createForm.officeId) {
+        nextErrors.officeId = 'একটি অফিস নির্বাচন করুন।';
+      }
+      if (!createForm.role) {
+        nextErrors.role = 'একটি রোল নির্বাচন করুন।';
+      }
       if (Object.keys(nextErrors).length > 0) {
         setErrors(nextErrors);
         return;
@@ -297,6 +334,9 @@ export default function UserFormSheet({
           nextErrors.uid = 'Enter a valid Firebase Auth UID (letters, numbers, _ or -).';
         }
       }
+      if (!linkForm.role) {
+        nextErrors.role = 'একটি রোল নির্বাচন করুন।';
+      }
       if (Object.keys(nextErrors).length > 0) {
         setErrors(nextErrors);
         return;
@@ -310,6 +350,12 @@ export default function UserFormSheet({
 
     if (mode === 'edit' && user) {
       const nextErrors = validateCommonStaffFields(editForm);
+      if (editScope !== 'all' && !editForm.officeId) {
+        nextErrors.officeId = 'একটি অফিস নির্বাচন করুন।';
+      }
+      if (!editForm.role) {
+        nextErrors.role = 'একটি রোল নির্বাচন করুন।';
+      }
       if (
         editForm.status === 'resigned' &&
         editForm.resignationDate &&
@@ -588,15 +634,20 @@ export default function UserFormSheet({
                 <select
                   id="link-role"
                   value={linkForm.role}
-                  onChange={(e) => setLinkForm((f) => ({ ...f, role: e.target.value, additionalOfficeIds: [] }))}
+                  onChange={(e) => {
+                    clearFieldError('role');
+                    setLinkForm((f) => ({ ...f, role: e.target.value, additionalOfficeIds: [] }));
+                  }}
                   className={INPUT_CLASS}
                 >
+                  <option value="" disabled>Select role...</option>
                   {assignableRoles.map((r) => (
                     <option key={r.key} value={r.key}>
                       {r.label}
                     </option>
                   ))}
                 </select>
+                {errors.role && <p className={ERROR_CLASS}>{errors.role}</p>}
               </div>
 
               <div>
@@ -720,26 +771,28 @@ export default function UserFormSheet({
             </div>
 
             <div>
-              <label htmlFor="create-office" className={LABEL_CLASS}>Office (optional)</label>
+              <label htmlFor="create-office" className={LABEL_CLASS}>Office</label>
               <select
                 id="create-office"
                 value={createForm.officeId}
-                onChange={(e) =>
+                onChange={(e) => {
+                  clearFieldError('officeId');
                   setCreateForm((f) => ({
                     ...f,
                     officeId: e.target.value,
                     additionalOfficeIds: f.additionalOfficeIds.filter((id) => id !== e.target.value)
-                  }))
-                }
+                  }));
+                }}
                 className={INPUT_CLASS}
               >
-                <option value="">Assign office later / None</option>
+                <option value="">Select office...</option>
                 {selectableOffices.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name}
                   </option>
                 ))}
               </select>
+              {errors.officeId && <p className={ERROR_CLASS}>{errors.officeId}</p>}
             </div>
 
             <div className="sm:col-span-2">
@@ -794,15 +847,20 @@ export default function UserFormSheet({
               <select
                 id="create-role"
                 value={createForm.role}
-                onChange={(e) => setCreateForm((f) => ({ ...f, role: e.target.value, additionalOfficeIds: [] }))}
+                onChange={(e) => {
+                  clearFieldError('role');
+                  setCreateForm((f) => ({ ...f, role: e.target.value, additionalOfficeIds: [] }));
+                }}
                 className={INPUT_CLASS}
               >
-                {assignableRoles.map((r) => (
+                <option value="" disabled>Select role...</option>
+                {assignableRolesForCreate.map((r) => (
                   <option key={r.key} value={r.key}>
                     {r.label}
                   </option>
                 ))}
               </select>
+              {errors.role && <p className={ERROR_CLASS}>{errors.role}</p>}
             </div>
 
             <div>
@@ -899,17 +957,20 @@ export default function UserFormSheet({
             </div>
 
             <div>
-              <label htmlFor="edit-office" className={LABEL_CLASS}>Office (optional)</label>
+              <label htmlFor="edit-office" className={LABEL_CLASS}>
+                {editScope === 'all' ? 'Office (optional)' : 'Office'}
+              </label>
               <select
                 id="edit-office"
                 value={editForm.officeId}
-                onChange={(e) =>
+                onChange={(e) => {
+                  clearFieldError('officeId');
                   setEditForm((f) => ({
                     ...f,
                     officeId: e.target.value,
                     additionalOfficeIds: f.additionalOfficeIds.filter((id) => id !== e.target.value)
-                  }))
-                }
+                  }));
+                }}
                 className={INPUT_CLASS}
               >
                 {editScope === 'all' && <option value="">Assign office later / None</option>}
@@ -919,6 +980,7 @@ export default function UserFormSheet({
                   </option>
                 ))}
               </select>
+              {errors.officeId && <p className={ERROR_CLASS}>{errors.officeId}</p>}
             </div>
 
             <div className="sm:col-span-2">
@@ -957,15 +1019,20 @@ export default function UserFormSheet({
                 id="edit-role"
                 value={editForm.role}
                 disabled={!canAssignTargetRole}
-                onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))}
+                onChange={(e) => {
+                  clearFieldError('role');
+                  setEditForm((f) => ({ ...f, role: e.target.value }));
+                }}
                 className={`${INPUT_CLASS} disabled:opacity-60`}
               >
+                <option value="" disabled>Select role...</option>
                 {roleOptionsForEdit.map((r) => (
                   <option key={r.key} value={r.key}>
                     {r.label}
                   </option>
                 ))}
               </select>
+              {errors.role && <p className={ERROR_CLASS}>{errors.role}</p>}
             </div>
 
             <div>

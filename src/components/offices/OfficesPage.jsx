@@ -18,10 +18,37 @@ import { getSubOffices } from './officeHelpers.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useData } from '../../context/DataContext.jsx';
 import { db, OperationType, handleFirestoreError } from '../../firebase/config.js';
+import { getAuthorityOfficeIds } from '../../lib/permissions.js';
 
-export default function OfficesPage() {
-  const { profile, offices, fetchPublicBootstrap } = useAuth();
+export default function OfficesPage({ scopeMode = 'all' }) {
+  const { profile, effectiveAuthUser, offices, fetchPublicBootstrap, can } = useAuth();
   const { logAudit } = useData();
+
+  const canManageAll = can('office.manage');
+  const canManageChild = can('office.child.manage');
+  const isChildMode = scopeMode === 'child' || (!canManageAll && canManageChild);
+
+  const authorityOfficeSet = useMemo(
+    () => new Set(getAuthorityOfficeIds(effectiveAuthUser)),
+    [effectiveAuthUser]
+  );
+
+  const allowedParentDistrictOffices = useMemo(
+    () =>
+      offices.filter(
+        (o) => o.level === 'district' && authorityOfficeSet.has(o.id)
+      ),
+    [offices, authorityOfficeSet]
+  );
+
+  const baseOffices = useMemo(() => {
+    if (!isChildMode) return offices;
+    return offices.filter(
+      (o) =>
+        o.level === 'upazila' &&
+        (authorityOfficeSet.has(o.parentOfficeId) || (profile?.uid && o.createdBy === profile.uid))
+    );
+  }, [isChildMode, offices, authorityOfficeSet, profile?.uid]);
 
   const [search, setSearch] = useState('');
   const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'head' | 'district' | 'upazila'
@@ -59,30 +86,31 @@ export default function OfficesPage() {
   );
 
   const filterCounts = useMemo(() => {
-    const counts = { all: offices.length, head: 0, district: 0, upazila: 0 };
-    offices.forEach((o) => {
+    const counts = { all: baseOffices.length, head: 0, district: 0, upazila: 0 };
+    baseOffices.forEach((o) => {
       if (o.level === 'head') counts.head += 1;
       else if (o.level === 'district') counts.district += 1;
       else if (o.level === 'upazila') counts.upazila += 1;
     });
     return counts;
-  }, [offices]);
+  }, [baseOffices]);
 
   const filteredOffices = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return offices.filter((o) => {
-      if (levelFilter !== 'all' && o.level !== levelFilter) return false;
+    return baseOffices.filter((o) => {
+      if (!isChildMode && levelFilter !== 'all' && o.level !== levelFilter) return false;
       if (!q) return true;
       return (
         (o.name || '').toLowerCase().includes(q) ||
-        (o.address || '').toLowerCase().includes(q)
+        (o.address || '').toLowerCase().includes(q) ||
+        officeName(o.parentOfficeId).toLowerCase().includes(q)
       );
     });
-  }, [offices, search, levelFilter]);
+  }, [baseOffices, isChildMode, search, levelFilter, officeName]);
 
   const selectedOffice = useMemo(
-    () => offices.find((o) => o.id === selectedOfficeId) || null,
-    [offices, selectedOfficeId]
+    () => baseOffices.find((o) => o.id === selectedOfficeId) || null,
+    [baseOffices, selectedOfficeId]
   );
 
   const selectedSubOffices = useMemo(
@@ -90,15 +118,38 @@ export default function OfficesPage() {
     [offices, selectedOffice?.id]
   );
 
+  const canEditSelected = useMemo(() => {
+    if (!selectedOffice) return false;
+    if (!isChildMode) return canManageAll;
+    return (
+      selectedOffice.level === 'upazila' &&
+      (authorityOfficeSet.has(selectedOffice.parentOfficeId) ||
+        (profile?.uid && selectedOffice.createdBy === profile.uid))
+    );
+  }, [selectedOffice, isChildMode, canManageAll, authorityOfficeSet, profile?.uid]);
+
+  const canDeleteSelected = !isChildMode && canManageAll;
+
   const saveOffice = async (form, editingId = null) => {
     setSaving(true);
     setErrorMsg('');
     try {
+      const effectiveLevel = isChildMode ? 'upazila' : form.level;
+      const effectiveParentId = effectiveLevel === 'head' ? null : form.parentOfficeId || null;
+
+      if (isChildMode) {
+        if (!effectiveParentId || !authorityOfficeSet.has(effectiveParentId)) {
+          const msg = 'আপনার এখতিয়ারভুক্ত একটি জেলা অফিস নির্বাচন করুন।';
+          setErrorMsg(msg);
+          return { ok: false, error: msg };
+        }
+      }
+
       const payload = {
         name: form.name.trim(),
         address: form.address.trim(),
-        level: form.level,
-        parentOfficeId: form.level === 'head' ? null : form.parentOfficeId || null,
+        level: effectiveLevel,
+        parentOfficeId: effectiveParentId,
         lat: Number(form.lat),
         lng: Number(form.lng),
         geofenceRadiusMeters: Number(form.geofenceRadiusMeters),
@@ -116,7 +167,9 @@ export default function OfficesPage() {
           targetCollection: 'offices',
           targetId: editingId,
           newValue: payload.name,
-          reason: 'Updated office configuration'
+          reason: isChildMode ? 'Updated child upazila office' : 'Updated office configuration',
+          officeId: editingId,
+          districtOfficeId: effectiveLevel === 'upazila' ? effectiveParentId || '' : editingId
         });
         await fetchPublicBootstrap();
         setFormSheetOpen(false);
@@ -126,6 +179,7 @@ export default function OfficesPage() {
 
       const refDoc = await addDoc(collection(db, 'offices'), {
         ...payload,
+        createdBy: profile?.uid || '',
         createdAt: serverTimestamp()
       });
       await logAudit({
@@ -134,7 +188,9 @@ export default function OfficesPage() {
         targetCollection: 'offices',
         targetId: refDoc.id,
         newValue: payload.name,
-        reason: 'Created new office'
+        reason: isChildMode ? 'Created child upazila office' : 'Created new office',
+        officeId: refDoc.id,
+        districtOfficeId: effectiveLevel === 'upazila' ? effectiveParentId || '' : refDoc.id
       });
       await fetchPublicBootstrap();
       setFormSheetOpen(false);
@@ -152,7 +208,7 @@ export default function OfficesPage() {
   };
 
   const deleteOffice = async (target) => {
-    if (!target || deleting) return;
+    if (!target || deleting || isChildMode || !canManageAll) return;
     setDeleting(true);
     setErrorMsg('');
     try {
@@ -191,29 +247,44 @@ export default function OfficesPage() {
     { key: 'upazila', label: 'Upazila', count: filterCounts.upazila }
   ];
 
+  const pageTitle = isChildMode ? 'উপজেলা অফিস' : 'Offices';
+  const canCreateOffice = !isChildMode || allowedParentDistrictOffices.length > 0;
+
   return (
-    <AppShell title="Offices" showThemeToggle>
+    <AppShell title={pageTitle} showThemeToggle>
       <div className="space-y-5">
         {/* Title & Primary Action */}
         <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
-              Offices
+              {pageTitle}
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
-              {offices.length} registered offices
+              {isChildMode
+                ? `${baseOffices.length}টি এখতিয়ারভুক্ত উপজেলা অফিস`
+                : `${baseOffices.length} registered offices`}
             </p>
           </div>
 
           <button
             type="button"
+            disabled={!canCreateOffice}
             onClick={openCreateSheet}
-            className="min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center justify-center gap-2 shadow-xs transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+            className="min-h-[44px] px-4 py-2.5 rounded-[14px] bg-[#0b6b4f] hover:bg-[#095941] dark:bg-[#4fd1a1] dark:hover:bg-[#3fc090] text-white dark:text-slate-950 text-sm font-semibold inline-flex items-center justify-center gap-2 shadow-xs transition-colors shrink-0 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
           >
             <Plus className="w-4 h-4 shrink-0" />
-            <span>Add office</span>
+            <span>{isChildMode ? 'নতুন উপজেলা অফিস' : 'Add office'}</span>
           </button>
         </section>
+
+        {isChildMode && allowedParentDistrictOffices.length === 0 && (
+          <div
+            role="note"
+            className="p-3.5 rounded-[16px] bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/70 text-xs text-amber-800 dark:text-amber-200"
+          >
+            উপজেলা অফিস তৈরি করতে আপনার অ্যাকাউন্টে অন্তত একটি জেলা অফিস (মূল বা অতিরিক্ত দায়িত্ব) নির্ধারিত থাকতে হবে।
+          </div>
+        )}
 
         {/* Search, 720px+ Cards/Table Switch & Filter Chips */}
         <section className="space-y-3">
@@ -277,39 +348,41 @@ export default function OfficesPage() {
             </div>
           </div>
 
-          <div
-            role="group"
-            aria-label="Filter offices by hierarchy level"
-            className="flex flex-wrap items-center gap-2"
-          >
-            {filterChips.map((chip) => {
-              const selected = levelFilter === chip.key;
-              return (
-                <button
-                  key={chip.key}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => setLevelFilter(chip.key)}
-                  className={`min-h-[44px] px-3.5 py-2 rounded-[14px] border text-xs font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
-                    selected
-                      ? 'bg-[#0b6b4f] dark:bg-[#4fd1a1] text-white dark:text-slate-950 border-[#0b6b4f] dark:border-[#4fd1a1]'
-                      : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:bg-slate-100/70 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <span>{chip.label}</span>
-                  <span
-                    className={`px-1.5 py-0.5 rounded-[10px] text-[11px] font-mono-tabular ${
+          {!isChildMode && (
+            <div
+              role="group"
+              aria-label="Filter offices by hierarchy level"
+              className="flex flex-wrap items-center gap-2"
+            >
+              {filterChips.map((chip) => {
+                const selected = levelFilter === chip.key;
+                return (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => setLevelFilter(chip.key)}
+                    className={`min-h-[44px] px-3.5 py-2 rounded-[14px] border text-xs font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
                       selected
-                        ? 'bg-white/20 dark:bg-slate-950/20 text-white dark:text-slate-950'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                        ? 'bg-[#0b6b4f] dark:bg-[#4fd1a1] text-white dark:text-slate-950 border-[#0b6b4f] dark:border-[#4fd1a1]'
+                        : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:bg-slate-100/70 dark:hover:bg-slate-800'
                     }`}
                   >
-                    {chip.count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                    <span>{chip.label}</span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded-[10px] text-[11px] font-mono-tabular ${
+                        selected
+                          ? 'bg-white/20 dark:bg-slate-950/20 text-white dark:text-slate-950'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {chip.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </section>
 
         {errorMsg && (
@@ -329,15 +402,17 @@ export default function OfficesPage() {
             </div>
             <div className="space-y-1">
               <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                {offices.length === 0 ? 'No registered offices' : 'No matching offices'}
+                {baseOffices.length === 0 ? 'No registered offices' : 'No matching offices'}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                {offices.length === 0
-                  ? 'Add your first office with coordinates, geofence radius, and working hours.'
+                {baseOffices.length === 0
+                  ? isChildMode
+                    ? 'আপনার জেলা অফিসের অধীন প্রথম উপজেলা অফিস যুক্ত করুন।'
+                    : 'Add your first office with coordinates, geofence radius, and working hours.'
                   : 'No offices match your current search or level filter.'}
               </p>
             </div>
-            {(search || levelFilter !== 'all') && (
+            {(search || (!isChildMode && levelFilter !== 'all')) && (
               <button
                 type="button"
                 onClick={() => {
@@ -389,6 +464,8 @@ export default function OfficesPage() {
         parentName={officeName(selectedOffice?.parentOfficeId)}
         subOffices={selectedSubOffices}
         busy={saving || deleting}
+        canEdit={canEditSelected}
+        canDelete={canDeleteSelected}
         onClose={() => setDetailOpen(false)}
         onEdit={openEditSheet}
         onDelete={deleteOffice}
@@ -401,6 +478,8 @@ export default function OfficesPage() {
         mode={formMode}
         office={formMode === 'edit' ? selectedOffice : null}
         offices={offices}
+        childOnly={isChildMode}
+        allowedParentOffices={allowedParentDistrictOffices}
         submitting={saving}
         onClose={() => setFormSheetOpen(false)}
         onSubmit={saveOffice}

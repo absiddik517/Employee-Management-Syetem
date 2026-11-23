@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "eslint firestore.rules storage.rules && node --check src/firebase/config.js src/lib/permissions.js",
-    "test": "node --test tests/permissions.test.mjs",
+    "test": "node --test tests/permissions.test.mjs tests/scripts.test.mjs",
     "test:rules": "firebase emulators:exec --only firestore,storage \"node --test tests/rules.test.mjs\""
   },
   "dependencies": {
