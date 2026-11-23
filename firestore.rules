@@ -975,6 +975,39 @@ service cloud.firestore {
         && (!('closedAt' in data) || isOptTimestamp(data.closedAt));
     }
 
+    // Validates /users/{uid}/devices/{deviceId} document schema (informational device metadata).
+    function isValidUserDevice(data, deviceId) {
+      return data.keys().hasAll([
+          'deviceId', 'name', 'model', 'manufacturer', 'platform', 'osVersion',
+          'appVersion', 'engine', 'screen', 'timezone', 'language',
+          'firstSeenAt', 'lastSeenAt', 'loginCount', 'status'
+        ])
+        && data.keys().hasOnly([
+          'deviceId', 'name', 'model', 'manufacturer', 'platform', 'osVersion',
+          'appVersion', 'engine', 'screen', 'timezone', 'language',
+          'ip', 'firstSeenAt', 'lastSeenAt', 'loginCount', 'status'
+        ])
+        && data.deviceId is string
+        && data.deviceId == deviceId
+        && data.deviceId.size() >= 4
+        && data.deviceId.size() <= 128
+        && data.name is string && data.name.size() <= 120
+        && data.model is string && data.model.size() <= 120
+        && data.manufacturer is string && data.manufacturer.size() <= 120
+        && data.platform is string && data.platform.size() <= 40
+        && data.osVersion is string && data.osVersion.size() <= 60
+        && data.appVersion is string && data.appVersion.size() <= 40
+        && data.engine is string && data.engine.size() <= 60
+        && data.screen is string && data.screen.size() <= 40
+        && data.timezone is string && data.timezone.size() <= 80
+        && data.language is string && data.language.size() <= 40
+        && (!('ip' in data) || data.ip == null || (data.ip is string && data.ip.size() <= 64))
+        && data.firstSeenAt is timestamp
+        && data.lastSeenAt is timestamp
+        && data.loginCount is int && data.loginCount >= 1 && data.loginCount <= 100000000
+        && data.status in ['seen', 'blocked'];
+    }
+
     // Validates an attendance check-in or check-out punch object.
     function isValidPunch(punch) {
       return punch is map
@@ -1571,6 +1604,61 @@ service cloud.firestore {
           && incoming().closedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly(['endDate', 'closedBy', 'closedAt'])
           && canWriteAssignmentForTarget(userId, docOfficeId(existing()), docDistrictOfficeId(existing()));
+
+        allow delete: if false;
+      }
+
+      // Best-effort informational device session history under /users/{uid}/devices/{deviceId}
+      match /devices/{deviceId} {
+        allow get: if isValidId(userId)
+          && isValidId(deviceId)
+          && isSignedIn()
+          && (
+            isOwner(userId)
+            || (
+              exists(/databases/$(database)/documents/users/$(userId))
+              && canViewUserDoc(get(/databases/$(database)/documents/users/$(userId)).data)
+            )
+          );
+
+        allow list: if isValidId(userId)
+          && isSignedIn()
+          && (
+            isOwner(userId)
+            || (
+              exists(/databases/$(database)/documents/users/$(userId))
+              && canViewUserDoc(get(/databases/$(database)/documents/users/$(userId)).data)
+            )
+          );
+
+        allow create: if isValidId(userId)
+          && isValidId(deviceId)
+          && deviceId.size() >= 4
+          && deviceId.size() <= 128
+          && isOwner(userId)
+          && isApprovedActiveUser()
+          && isValidUserDevice(incoming(), deviceId)
+          && incoming().firstSeenAt == request.time
+          && incoming().lastSeenAt == request.time
+          && incoming().loginCount == 1;
+
+        allow update: if isValidId(userId)
+          && isValidId(deviceId)
+          && deviceId.size() >= 4
+          && deviceId.size() <= 128
+          && isOwner(userId)
+          && isApprovedActiveUser()
+          && isValidUserDevice(incoming(), deviceId)
+          && incoming().deviceId == existing().deviceId
+          && incoming().firstSeenAt == existing().firstSeenAt
+          && incoming().lastSeenAt == request.time
+          && incoming().loginCount >= existing().loginCount
+          && incoming().loginCount <= existing().loginCount + 1
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'model', 'manufacturer', 'platform', 'osVersion',
+            'appVersion', 'engine', 'screen', 'timezone', 'language',
+            'ip', 'lastSeenAt', 'loginCount', 'status'
+          ]);
 
         allow delete: if false;
       }

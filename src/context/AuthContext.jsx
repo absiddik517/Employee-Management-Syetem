@@ -22,6 +22,8 @@ import { ref as storageRef, getDownloadURL } from 'firebase/storage';
 import { auth, db, storage, OperationType, handleFirestoreError, withTimeout } from '../firebase/config.js';
 import { uploadImageSafe } from '../utils/storageUpload.js';
 import { getLocalDeviceId } from '../utils/device.js';
+import { DEVICE_INSIGHTS_ENABLED } from '../config/deviceInsights.js';
+import { recordDeviceSession } from '../utils/deviceSession.js';
 import {
   BOOTSTRAP_SUPER_EMAILS,
   can as canCheck,
@@ -430,6 +432,12 @@ export function AuthProvider({ children }) {
           }
         } else if (data.boundDeviceId !== localDeviceId) {
           setDeviceMismatch(true);
+        }
+
+        if (DEVICE_INSIGHTS_ENABLED) {
+          void recordDeviceSession(db, uid, localDeviceId, {
+            blocked: Boolean(data.boundDeviceId && data.boundDeviceId !== localDeviceId)
+          });
         }
       }
 

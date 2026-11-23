@@ -263,6 +263,30 @@
         "closedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["kind", "officeId", "officeName", "roleKey", "roleLabel", "startDate", "type", "createdBy", "createdByName", "createdAt"]
+    },
+    "Device": {
+      "title": "Device",
+      "description": "Best-effort informational device session metadata stored under /users/{uid}/devices/{deviceId} (never decides login or attendance binding)",
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "model": { "type": "string", "maxLength": 120 },
+        "manufacturer": { "type": "string", "maxLength": 120 },
+        "platform": { "type": "string", "maxLength": 40 },
+        "osVersion": { "type": "string", "maxLength": 60 },
+        "appVersion": { "type": "string", "maxLength": 40 },
+        "engine": { "type": "string", "maxLength": 60 },
+        "screen": { "type": "string", "maxLength": 40 },
+        "timezone": { "type": "string", "maxLength": 80 },
+        "language": { "type": "string", "maxLength": 40 },
+        "ip": { "type": "string", "maxLength": 64 },
+        "firstSeenAt": { "type": "string", "format": "date-time" },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "loginCount": { "type": "number" },
+        "status": { "type": "string", "enum": ["seen", "blocked"] }
+      },
+      "required": ["deviceId", "name", "model", "manufacturer", "platform", "osVersion", "appVersion", "engine", "screen", "timezone", "language", "firstSeenAt", "lastSeenAt", "loginCount", "status"]
     }
   },
   "firestore": {
@@ -281,6 +305,10 @@
     "/users/{userId}/assignments/{assignmentId}": {
       "schema": { "$ref": "#/entities/Assignment" },
       "description": "Append-only work history entries for postings, transfers, role/designation changes, charges, and attachments"
+    },
+    "/users/{userId}/devices/{deviceId}": {
+      "schema": { "$ref": "#/entities/Device" },
+      "description": "Informational device session records (never controls authentication or punch binding)"
     },
     "/attendance/{attendanceId}": {
       "schema": { "$ref": "#/entities/Attendance" },

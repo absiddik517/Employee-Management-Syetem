@@ -17,6 +17,13 @@ import StatusBadge, { getRoleLabel, getUserInitials } from './StatusBadge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { db, OperationType, handleFirestoreError, withTimeout } from '../../firebase/config.js';
 import { getPermissionScope } from '../../lib/permissions.js';
+import { DEVICE_INSIGHTS_ENABLED } from '../../config/deviceInsights.js';
+import {
+  deriveDeviceStatus,
+  formatDeviceTimestamp,
+  getDeviceStatusLabel,
+  toDeviceEpochMs
+} from '../../utils/deviceInfo.js';
 
 function formatJoiningDate(val) {
   if (!val) return 'Not set';
@@ -65,6 +72,8 @@ export default function UserDetailSheet({
   const [assignments, setAssignments] = useState([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentsError, setAssignmentsError] = useState('');
+  const [deviceRecords, setDeviceRecords] = useState([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
 
   const uid = user ? user.uid || user.id : '';
 
@@ -72,6 +81,42 @@ export default function UserDetailSheet({
     setCopiedUid(false);
     setConfirmReset(false);
   }, [uid, open]);
+
+  useEffect(() => {
+    if (!DEVICE_INSIGHTS_ENABLED || !open || !uid) {
+      setDeviceRecords([]);
+      setDevicesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setDevicesLoading(true);
+
+    withTimeout(
+      getDocs(collection(db, 'users', uid, 'devices')),
+      10000,
+      'Device details timed out'
+    )
+      .then((snap) => {
+        if (cancelled) return;
+        const list = snap.docs
+          .map((d) => ({ deviceId: d.id, ...d.data() }))
+          .sort((a, b) => toDeviceEpochMs(b.lastSeenAt) - toDeviceEpochMs(a.lastSeenAt));
+        setDeviceRecords(list);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('UserDetailSheet devices load failed:', err?.code || err?.message || err);
+        setDeviceRecords([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDevicesLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, uid]);
 
   useEffect(() => {
     if (!open || !uid) {
@@ -399,6 +444,108 @@ export default function UserDetailSheet({
               {user.boundDeviceId || 'Unbound'}
             </span>
           </div>
+          {DEVICE_INSIGHTS_ENABLED && (() => {
+            const boundDeviceRecord = hasDevice
+              ? deviceRecords.find((d) => d.deviceId === user.boundDeviceId) || null
+              : null;
+            const boundSystemText = boundDeviceRecord
+              ? [boundDeviceRecord.platform, boundDeviceRecord.osVersion]
+                  .filter((v) => v && v !== 'Unknown')
+                  .join(' · ') || 'Unknown'
+              : 'Unknown';
+
+            return (
+              <div className="space-y-2.5">
+                {hasDevice && (
+                  <dl className="rounded-[18px] border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 divide-y divide-slate-200/80 dark:divide-slate-800">
+                    <DetailRow
+                      label="Bound device name"
+                      value={devicesLoading ? 'Loading...' : boundDeviceRecord?.name || 'No details yet'}
+                    />
+                    <DetailRow
+                      label="Model"
+                      value={devicesLoading ? 'Loading...' : boundDeviceRecord?.model || 'Unknown'}
+                    />
+                    <DetailRow
+                      label="System"
+                      value={devicesLoading ? 'Loading...' : boundSystemText}
+                    />
+                    <DetailRow
+                      label="Last active"
+                      value={
+                        devicesLoading
+                          ? 'Loading...'
+                          : formatDeviceTimestamp(boundDeviceRecord?.lastSeenAt)
+                      }
+                      mono
+                    />
+                  </dl>
+                )}
+
+                <div className="rounded-[18px] border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 p-3.5 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      Device history
+                    </span>
+                    <span className="text-[11px] font-mono-tabular text-slate-500 dark:text-slate-400">
+                      {devicesLoading ? 'Loading...' : `${deviceRecords.length} recorded`}
+                    </span>
+                  </div>
+                  {devicesLoading ? (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Loading device history...</p>
+                  ) : deviceRecords.length === 0 ? (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">No details yet</p>
+                  ) : (
+                    <ul className="divide-y divide-slate-200/70 dark:divide-slate-800">
+                      {deviceRecords.slice(0, 5).map((dev) => {
+                        const derivedStatus = deriveDeviceStatus(
+                          user.boundDeviceId,
+                          dev.deviceId,
+                          dev.status
+                        );
+                        const sysSummary = [dev.platform, dev.osVersion]
+                          .filter((v) => v && v !== 'Unknown')
+                          .join(' · ');
+                        return (
+                          <li
+                            key={dev.deviceId}
+                            className="py-2 first:pt-1 last:pb-0 flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                                {dev.name || 'Unknown device'}
+                              </div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                                {(dev.model && dev.model !== 'Unknown' ? dev.model : 'Unknown') +
+                                  (sysSummary ? ` · ${sysSummary}` : '')}{' '}
+                                · <span className="font-mono-tabular">{dev.deviceId.slice(0, 12)}…</span>
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0 space-y-0.5">
+                              <div
+                                className={`text-[11px] font-semibold ${
+                                  derivedStatus === 'bound'
+                                    ? 'text-[#0b6b4f] dark:text-[#4fd1a1]'
+                                    : derivedStatus === 'blocked'
+                                    ? 'text-rose-600 dark:text-rose-400'
+                                    : 'text-slate-500 dark:text-slate-400'
+                                }`}
+                              >
+                                {getDeviceStatusLabel(derivedStatus)}
+                              </div>
+                              <div className="text-[11px] font-mono-tabular text-slate-500 dark:text-slate-400">
+                                {formatDeviceTimestamp(dev.lastSeenAt)}
+                              </div>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           {confirmReset && hasDevice && (
             <p className="text-xs text-amber-700 dark:text-amber-300 px-1" role="status">
               Tap &ldquo;Tap again to confirm&rdquo; below to clear this bound device. The staff member will bind a new device on next login.

@@ -20,9 +20,11 @@ import {
 } from 'firebase/firestore';
 import {
   CheckCircle2,
+  Info,
   LayoutGrid,
   Link2,
   Search,
+  Smartphone,
   Table2,
   UserPlus,
   Users,
@@ -35,6 +37,11 @@ import UserTable from './UserTable.jsx';
 import UserDetailSheet from './UserDetailSheet.jsx';
 import UserFormSheet from './UserFormSheet.jsx';
 import TransferUserSheet from './TransferUserSheet.jsx';
+import DeviceCard from './DeviceCard.jsx';
+import DevicesTable from './DevicesTable.jsx';
+import DeviceDetailSheet from './DeviceDetailSheet.jsx';
+import { DEVICE_INSIGHTS_ENABLED } from '../../config/deviceInsights.js';
+import { deriveDeviceStatus, toDeviceEpochMs } from '../../utils/deviceInfo.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   db,
@@ -99,6 +106,15 @@ export default function UsersPage() {
   const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'active' | 'inactive' | 'pending'
   const [viewMode, setViewMode] = useState('table'); // 'cards' | 'table' (applies >= 720px)
 
+  const [activeTab, setActiveTab] = useState('people'); // 'people' | 'devices'
+  const [deviceSearch, setDeviceSearch] = useState('');
+  const [deviceStatusFilter, setDeviceStatusFilter] = useState('all'); // 'all' | 'bound' | 'released' | 'blocked' | 'shared'
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [devicesByUid, setDevicesByUid] = useState({});
+  const deviceCacheRef = useRef(new Map());
+  const [selectedDeviceKey, setSelectedDeviceKey] = useState(null);
+  const [deviceDetailOpen, setDeviceDetailOpen] = useState(false);
+
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -128,6 +144,7 @@ export default function UsersPage() {
   const canCreateUsers =
     ['office', 'subtree', 'all'].includes(createScope) && assignableRolesForCreate.length > 0;
   const canLinkUsers = createScope === 'all' || editScope === 'all';
+  const showDevicesTab = DEVICE_INSIGHTS_ENABLED && can('user.view');
 
   const showToast = useCallback((msg) => {
     setToastMsg(msg);
@@ -265,6 +282,210 @@ export default function UsersPage() {
     () => users.find((u) => (u.uid || u.id) === selectedUserId) || null,
     [users, selectedUserId]
   );
+
+  useEffect(() => {
+    if (!showDevicesTab && activeTab !== 'people') {
+      setActiveTab('people');
+    }
+  }, [showDevicesTab, activeTab]);
+
+  useEffect(() => {
+    if (!showDevicesTab || activeTab !== 'devices' || loading) return;
+
+    const permittedUsers = users.filter((u) =>
+      can('user.view', {
+        uid: u.uid || u.id,
+        role: u.role,
+        officeId: u.officeId || '',
+        districtOfficeId: u.districtOfficeId || ''
+      })
+    );
+    const missingUids = permittedUsers
+      .map((u) => u.uid || u.id)
+      .filter((uid) => uid && !deviceCacheRef.current.has(uid));
+
+    if (missingUids.length === 0) {
+      setDevicesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setDevicesLoading(true);
+
+    const fetchBatches = async () => {
+      const BATCH_SIZE = 8;
+      try {
+        for (let i = 0; i < missingUids.length; i += BATCH_SIZE) {
+          if (cancelled) return;
+          const chunk = missingUids.slice(i, i + BATCH_SIZE);
+          await Promise.all(
+            chunk.map(async (uid) => {
+              try {
+                const snap = await withTimeout(
+                  getDocs(collection(db, 'users', uid, 'devices')),
+                  10000,
+                  'Device query timed out'
+                );
+                const recs = snap.docs.map((d) => ({ deviceId: d.id, ...d.data() }));
+                deviceCacheRef.current.set(uid, recs);
+              } catch (err) {
+                console.warn(`Devices fetch skipped for ${uid}:`, err?.code || err?.message || err);
+                deviceCacheRef.current.set(uid, []);
+              }
+            })
+          );
+          if (!cancelled) {
+            setDevicesByUid(Object.fromEntries(deviceCacheRef.current.entries()));
+          }
+        }
+      } finally {
+        if (!cancelled) setDevicesLoading(false);
+      }
+    };
+
+    void fetchBatches();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showDevicesTab, activeTab, loading, users, can]);
+
+  const deviceEntries = useMemo(() => {
+    if (!showDevicesTab) return [];
+
+    const boundUsersByDeviceId = new Map();
+    for (const u of users) {
+      if (u.boundDeviceId) {
+        const list = boundUsersByDeviceId.get(u.boundDeviceId) || [];
+        list.push(u);
+        boundUsersByDeviceId.set(u.boundDeviceId, list);
+      }
+    }
+
+    const entries = [];
+    for (const u of users) {
+      const uid = u.uid || u.id;
+      if (
+        !uid ||
+        !can('user.view', {
+          uid,
+          role: u.role,
+          officeId: u.officeId || '',
+          districtOfficeId: u.districtOfficeId || ''
+        })
+      ) {
+        continue;
+      }
+
+      const cachedList = Array.isArray(devicesByUid[uid]) ? devicesByUid[uid] : [];
+      const seenDeviceIds = new Set(cachedList.map((d) => d.deviceId));
+      const combinedDevices = [...cachedList];
+
+      if (u.boundDeviceId && !seenDeviceIds.has(u.boundDeviceId)) {
+        combinedDevices.push({
+          deviceId: u.boundDeviceId,
+          name: 'Unknown device',
+          model: 'Unknown',
+          manufacturer: 'Unknown',
+          platform: 'Unknown',
+          osVersion: 'Unknown',
+          appVersion: 'Unknown',
+          engine: 'Unknown',
+          screen: 'Unknown',
+          timezone: 'Unknown',
+          language: 'Unknown',
+          ip: null,
+          firstSeenAt: null,
+          lastSeenAt: null,
+          loginCount: null,
+          status: 'seen'
+        });
+      }
+
+      for (const dev of combinedDevices) {
+        const derivedStatus = deriveDeviceStatus(u.boundDeviceId, dev.deviceId, dev.status);
+        const isBound = derivedStatus === 'bound';
+        const sharedUsers = isBound ? boundUsersByDeviceId.get(dev.deviceId) || [u] : [];
+        const isShared = isBound && sharedUsers.length > 1;
+        entries.push({
+          user: u,
+          device: dev,
+          derivedStatus,
+          isShared,
+          sharedUsers,
+          sharedCount: sharedUsers.length
+        });
+      }
+    }
+
+    entries.sort((a, b) => {
+      const diff = toDeviceEpochMs(b.device?.lastSeenAt) - toDeviceEpochMs(a.device?.lastSeenAt);
+      if (diff !== 0) return diff;
+      const rank = (s) => (s === 'bound' ? 0 : s === 'blocked' ? 1 : 2);
+      const rDiff = rank(a.derivedStatus) - rank(b.derivedStatus);
+      if (rDiff !== 0) return rDiff;
+      return (a.user?.name || a.user?.email || '').localeCompare(b.user?.name || b.user?.email || '');
+    });
+
+    return entries;
+  }, [showDevicesTab, users, devicesByUid, can]);
+
+  const deviceFilterCounts = useMemo(() => {
+    let bound = 0;
+    let released = 0;
+    let blocked = 0;
+    let shared = 0;
+    deviceEntries.forEach((entry) => {
+      if (entry.derivedStatus === 'bound') bound += 1;
+      else if (entry.derivedStatus === 'blocked') blocked += 1;
+      else released += 1;
+      if (entry.isShared) shared += 1;
+    });
+    return {
+      all: deviceEntries.length,
+      bound,
+      released,
+      blocked,
+      shared
+    };
+  }, [deviceEntries]);
+
+  const filteredDevices = useMemo(() => {
+    const q = deviceSearch.trim().toLowerCase();
+    return deviceEntries.filter((entry) => {
+      if (deviceStatusFilter === 'bound' && entry.derivedStatus !== 'bound') return false;
+      if (deviceStatusFilter === 'released' && entry.derivedStatus !== 'released') return false;
+      if (deviceStatusFilter === 'blocked' && entry.derivedStatus !== 'blocked') return false;
+      if (deviceStatusFilter === 'shared' && !entry.isShared) return false;
+
+      if (!q) return true;
+      const u = entry.user || {};
+      const d = entry.device || {};
+      return (
+        (u.name || '').toLowerCase().includes(q) ||
+        (u.email || '').toLowerCase().includes(q) ||
+        (u.uid || u.id || '').toLowerCase().includes(q) ||
+        (d.name || '').toLowerCase().includes(q) ||
+        (d.model || '').toLowerCase().includes(q) ||
+        (d.manufacturer || '').toLowerCase().includes(q) ||
+        (d.platform || '').toLowerCase().includes(q) ||
+        (d.osVersion || '').toLowerCase().includes(q) ||
+        (d.ip || '').toLowerCase().includes(q) ||
+        (d.deviceId || '').toLowerCase().includes(q)
+      );
+    });
+  }, [deviceEntries, deviceSearch, deviceStatusFilter]);
+
+  const selectedDeviceEntry = useMemo(() => {
+    if (!selectedDeviceKey) return null;
+    return (
+      deviceEntries.find(
+        (e) =>
+          (e.user?.uid || e.user?.id) === selectedDeviceKey.uid &&
+          e.device?.deviceId === selectedDeviceKey.deviceId
+      ) || null
+    );
+  }, [deviceEntries, selectedDeviceKey]);
 
   const tryUploadOptionalPhoto = async (targetUid, file) => {
     if (!file) return { uploaded: false, warning: '', reason: 'No photo selected' };
@@ -1295,6 +1516,14 @@ export default function UsersPage() {
     setDetailOpen(true);
   };
 
+  const openDeviceDetail = (entry) => {
+    const uid = entry?.user?.uid || entry?.user?.id;
+    const deviceId = entry?.device?.deviceId;
+    if (!uid || !deviceId) return;
+    setSelectedDeviceKey({ uid, deviceId });
+    setDeviceDetailOpen(true);
+  };
+
   const filterChips = [
     { key: 'all', label: 'All', count: filterCounts.all },
     { key: 'active', label: 'Active', count: filterCounts.active },
@@ -1302,22 +1531,71 @@ export default function UsersPage() {
     { key: 'pending', label: 'Pending approval', count: filterCounts.pending }
   ];
 
+  const deviceFilterChips = [
+    { key: 'all', label: 'All', count: deviceFilterCounts.all },
+    { key: 'bound', label: 'Bound', count: deviceFilterCounts.bound },
+    { key: 'released', label: 'Released', count: deviceFilterCounts.released },
+    { key: 'blocked', label: 'Blocked attempts', count: deviceFilterCounts.blocked },
+    { key: 'shared', label: 'Shared', count: deviceFilterCounts.shared }
+  ];
+
   return (
     <AppShell title="Users & Devices" showThemeToggle>
       <div className="space-y-5">
         {/* Header & Primary Actions */}
         <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
-              Users &amp; Devices
-            </h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
-              {users.length} staff accounts
-              {userViewScope !== 'all' && ' (Scoped)'}
-            </p>
+          <div className="space-y-3">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
+                Users &amp; Devices
+              </h1>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
+                {activeTab === 'devices'
+                  ? `${deviceEntries.length} device records across ${users.length} accounts`
+                  : `${users.length} staff accounts`}
+                {userViewScope !== 'all' && ' (Scoped)'}
+              </p>
+            </div>
+
+            {showDevicesTab && (
+              <div
+                role="tablist"
+                aria-label="Users and devices sections"
+                className="inline-flex items-center p-1 rounded-[16px] bg-slate-200/70 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'people'}
+                  onClick={() => setActiveTab('people')}
+                  className={`min-h-[44px] px-4 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                    activeTab === 'people'
+                      ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Users className="w-4 h-4" />
+                  <span>People</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'devices'}
+                  onClick={() => setActiveTab('devices')}
+                  className={`min-h-[44px] px-4 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                    activeTab === 'devices'
+                      ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Smartphone className="w-4 h-4" />
+                  <span>Devices</span>
+                </button>
+              </div>
+            )}
           </div>
 
-          {(canCreateUsers || canLinkUsers) && (
+          {activeTab === 'people' && (canCreateUsers || canLinkUsers) && (
             <div className="flex flex-wrap items-center gap-2.5 shrink-0">
               {canLinkUsers && (
                 <button
@@ -1343,177 +1621,365 @@ export default function UsersPage() {
           )}
         </section>
 
-        {/* Search, Filter Chips & 720px+ Cards/Table Switch */}
-        <section className="space-y-3">
-          <div className="flex flex-col min-[720px]:flex-row min-[720px]:items-center justify-between gap-3">
-            <div className="relative flex-1 min-[720px]:max-w-md">
-              <Search
-                aria-hidden="true"
-                className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
-              />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                type="search"
-                aria-label="Search staff accounts by name, email, or UID"
-                placeholder="Search by name, email, or UID..."
-                className="w-full min-h-[44px] pl-10 pr-10 py-2 rounded-[16px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-base text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#0b6b4f] dark:focus:ring-[#4fd1a1] focus:border-transparent transition-colors"
-              />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => setSearch('')}
-                  aria-label="Clear search"
-                  className="min-h-[44px] min-w-[44px] absolute right-0 top-1/2 -translate-y-1/2 inline-flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-r-[16px]"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
+        {activeTab === 'devices' && showDevicesTab ? (
+          <>
+            <div className="rounded-[16px] border border-slate-200/90 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/60 px-4 py-2.5 flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+              <Info className="w-4 h-4 text-[#0b6b4f] dark:text-[#4fd1a1] shrink-0" aria-hidden="true" />
+              <span>Binding uses the device ID only</span>
             </div>
 
-            <div
-              role="group"
-              aria-label="List view switch"
-              className="hidden min-[720px]:inline-flex items-center p-1 rounded-[16px] bg-slate-200/70 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 self-start"
-            >
-              <button
-                type="button"
-                aria-pressed={viewMode === 'cards'}
-                onClick={() => setViewMode('cards')}
-                className={`min-h-[44px] px-3.5 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
-                  viewMode === 'cards'
-                    ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <LayoutGrid className="w-4 h-4" />
-                <span>Cards</span>
-              </button>
-              <button
-                type="button"
-                aria-pressed={viewMode === 'table'}
-                onClick={() => setViewMode('table')}
-                className={`min-h-[44px] px-3.5 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
-                  viewMode === 'table'
-                    ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <Table2 className="w-4 h-4" />
-                <span>Table</span>
-              </button>
-            </div>
-          </div>
+            <section className="space-y-3">
+              <div className="flex flex-col min-[720px]:flex-row min-[720px]:items-center justify-between gap-3">
+                <div className="relative flex-1 min-[720px]:max-w-md">
+                  <Search
+                    aria-hidden="true"
+                    className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                  />
+                  <input
+                    value={deviceSearch}
+                    onChange={(e) => setDeviceSearch(e.target.value)}
+                    type="search"
+                    aria-label="Search devices by user, device name, model, IP, or device ID"
+                    placeholder="Search user, device, model, IP, or ID..."
+                    className="w-full min-h-[44px] pl-10 pr-10 py-2 rounded-[16px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-base text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#0b6b4f] dark:focus:ring-[#4fd1a1] focus:border-transparent transition-colors"
+                  />
+                  {deviceSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setDeviceSearch('')}
+                      aria-label="Clear device search"
+                      className="min-h-[44px] min-w-[44px] absolute right-0 top-1/2 -translate-y-1/2 inline-flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-r-[16px]"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
 
-          {/* Filter Chips */}
-          <div
-            role="group"
-            aria-label="Filter accounts by status"
-            className="flex flex-wrap items-center gap-2"
-          >
-            {filterChips.map((chip) => {
-              const selected = statusFilter === chip.key;
-              return (
-                <button
-                  key={chip.key}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => setStatusFilter(chip.key)}
-                  className={`min-h-[44px] px-3.5 py-2 rounded-[14px] border text-xs font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
-                    selected
-                      ? 'bg-[#0b6b4f] dark:bg-[#4fd1a1] text-white dark:text-slate-950 border-[#0b6b4f] dark:border-[#4fd1a1]'
-                      : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:bg-slate-100/70 dark:hover:bg-slate-800'
-                  }`}
+                <div
+                  role="group"
+                  aria-label="Devices list view switch"
+                  className="hidden min-[720px]:inline-flex items-center p-1 rounded-[16px] bg-slate-200/70 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 self-start"
                 >
-                  <span>{chip.label}</span>
-                  <span
-                    className={`px-1.5 py-0.5 rounded-[10px] text-[11px] font-mono-tabular ${
-                      selected
-                        ? 'bg-white/20 dark:bg-slate-950/20 text-white dark:text-slate-950'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                  <button
+                    type="button"
+                    aria-pressed={viewMode === 'cards'}
+                    onClick={() => setViewMode('cards')}
+                    className={`min-h-[44px] px-3.5 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                      viewMode === 'cards'
+                        ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                     }`}
                   >
-                    {chip.count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
+                    <LayoutGrid className="w-4 h-4" />
+                    <span>Cards</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={viewMode === 'table'}
+                    onClick={() => setViewMode('table')}
+                    className={`min-h-[44px] px-3.5 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                      viewMode === 'table'
+                        ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Table2 className="w-4 h-4" />
+                    <span>Table</span>
+                  </button>
+                </div>
+              </div>
 
-        {errorMsg && (
-          <div
-            role="alert"
-            className="p-3.5 rounded-[16px] bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/70 text-xs text-rose-800 dark:text-rose-200"
-          >
-            {errorMsg}
-          </div>
-        )}
-
-        {/* List Content */}
-        {loading ? (
-          <div className="rounded-[22px] border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-10 text-center text-sm text-slate-500 dark:text-slate-400">
-            Loading staff accounts...
-          </div>
-        ) : filteredUsers.length === 0 ? (
-          <div className="rounded-[22px] border border-dashed border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900/60 p-10 text-center space-y-3">
-            <div className="w-12 h-12 rounded-[16px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 mx-auto flex items-center justify-center">
-              <Users className="w-6 h-6" />
-            </div>
-            <div className="space-y-1">
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                No matching accounts
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                No staff accounts match your current search or status filter.
-              </p>
-            </div>
-            {(search || statusFilter !== 'all') && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSearch('');
-                  setStatusFilter('all');
-                }}
-                className="min-h-[44px] px-4 py-2 rounded-[14px] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+              <div
+                role="group"
+                aria-label="Filter devices by status"
+                className="flex flex-wrap items-center gap-2"
               >
-                Clear search and filters
-              </button>
+                {deviceFilterChips.map((chip) => {
+                  const selected = deviceStatusFilter === chip.key;
+                  return (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setDeviceStatusFilter(chip.key)}
+                      className={`min-h-[44px] px-3.5 py-2 rounded-[14px] border text-xs font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                        selected
+                          ? 'bg-[#0b6b4f] dark:bg-[#4fd1a1] text-white dark:text-slate-950 border-[#0b6b4f] dark:border-[#4fd1a1]'
+                          : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:bg-slate-100/70 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span>{chip.label}</span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded-[10px] text-[11px] font-mono-tabular ${
+                          selected
+                            ? 'bg-white/20 dark:bg-slate-950/20 text-white dark:text-slate-950'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        {chip.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            {devicesLoading && deviceEntries.length === 0 ? (
+              <div className="rounded-[22px] border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-10 text-center text-sm text-slate-500 dark:text-slate-400">
+                Loading device records...
+              </div>
+            ) : filteredDevices.length === 0 ? (
+              <div className="rounded-[22px] border border-dashed border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900/60 p-10 text-center space-y-3">
+                <div className="w-12 h-12 rounded-[16px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 mx-auto flex items-center justify-center">
+                  <Smartphone className="w-6 h-6" />
+                </div>
+                <div className="space-y-1">
+                  <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                    {deviceEntries.length === 0 ? 'No details yet' : 'No matching devices'}
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+                    {deviceEntries.length === 0
+                      ? 'No device records have been captured for the visible staff accounts yet.'
+                      : 'No devices match your current search or filter.'}
+                  </p>
+                </div>
+                {(deviceSearch || deviceStatusFilter !== 'all') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeviceSearch('');
+                      setDeviceStatusFilter('all');
+                    }}
+                    className="min-h-[44px] px-4 py-2 rounded-[14px] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                  >
+                    Clear search and filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {devicesLoading && (
+                  <p className="text-xs text-slate-500 dark:text-slate-400 px-1" role="status">
+                    Loading remaining device details...
+                  </p>
+                )}
+
+                <div
+                  className={
+                    viewMode === 'cards'
+                      ? 'grid grid-cols-1 min-[720px]:grid-cols-2 gap-3'
+                      : 'grid grid-cols-1 gap-3 min-[720px]:hidden'
+                  }
+                >
+                  {filteredDevices.map((entry) => (
+                    <DeviceCard
+                      key={`${entry.user?.uid || entry.user?.id}_${entry.device.deviceId}`}
+                      entry={entry}
+                      officeName={officeName}
+                      onSelect={openDeviceDetail}
+                    />
+                  ))}
+                </div>
+
+                {viewMode === 'table' && (
+                  <div className="hidden min-[720px]:block">
+                    <DevicesTable
+                      entries={filteredDevices}
+                      officeName={officeName}
+                      onSelect={openDeviceDetail}
+                    />
+                  </div>
+                )}
+              </>
             )}
-          </div>
+          </>
         ) : (
           <>
-            {/* Cards View: Always on <720px; optional on >=720px */}
-            <div
-              className={
-                viewMode === 'cards'
-                  ? 'grid grid-cols-1 min-[720px]:grid-cols-2 gap-3'
-                  : 'grid grid-cols-1 gap-3 min-[720px]:hidden'
-              }
-            >
-              {filteredUsers.map((u) => (
-                <UserCard
-                  key={u.uid || u.id}
-                  user={u}
-                  officeName={officeName}
-                  onSelect={openUserDetail}
-                />
-              ))}
-            </div>
+            {/* Search, Filter Chips & 720px+ Cards/Table Switch */}
+            <section className="space-y-3">
+              <div className="flex flex-col min-[720px]:flex-row min-[720px]:items-center justify-between gap-3">
+                <div className="relative flex-1 min-[720px]:max-w-md">
+                  <Search
+                    aria-hidden="true"
+                    className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                  />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    type="search"
+                    aria-label="Search staff accounts by name, email, or UID"
+                    placeholder="Search by name, email, or UID..."
+                    className="w-full min-h-[44px] pl-10 pr-10 py-2 rounded-[16px] border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-base text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#0b6b4f] dark:focus:ring-[#4fd1a1] focus:border-transparent transition-colors"
+                  />
+                  {search && (
+                    <button
+                      type="button"
+                      onClick={() => setSearch('')}
+                      aria-label="Clear search"
+                      className="min-h-[44px] min-w-[44px] absolute right-0 top-1/2 -translate-y-1/2 inline-flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-r-[16px]"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
 
-            {/* Table View: Only >=720px when viewMode === 'table' */}
-            {viewMode === 'table' && (
-              <div className="hidden min-[720px]:block">
-                <UserTable
-                  users={filteredUsers}
-                  officeName={officeName}
-                  onSelect={openUserDetail}
-                />
+                <div
+                  role="group"
+                  aria-label="List view switch"
+                  className="hidden min-[720px]:inline-flex items-center p-1 rounded-[16px] bg-slate-200/70 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 self-start"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={viewMode === 'cards'}
+                    onClick={() => setViewMode('cards')}
+                    className={`min-h-[44px] px-3.5 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                      viewMode === 'cards'
+                        ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <LayoutGrid className="w-4 h-4" />
+                    <span>Cards</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={viewMode === 'table'}
+                    onClick={() => setViewMode('table')}
+                    className={`min-h-[44px] px-3.5 py-2 rounded-[12px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                      viewMode === 'table'
+                        ? 'bg-white dark:bg-slate-900 text-[#0b6b4f] dark:text-[#4fd1a1] shadow-xs'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Table2 className="w-4 h-4" />
+                    <span>Table</span>
+                  </button>
+                </div>
               </div>
+
+              {/* Filter Chips */}
+              <div
+                role="group"
+                aria-label="Filter accounts by status"
+                className="flex flex-wrap items-center gap-2"
+              >
+                {filterChips.map((chip) => {
+                  const selected = statusFilter === chip.key;
+                  return (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setStatusFilter(chip.key)}
+                      className={`min-h-[44px] px-3.5 py-2 rounded-[14px] border text-xs font-semibold inline-flex items-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1] ${
+                        selected
+                          ? 'bg-[#0b6b4f] dark:bg-[#4fd1a1] text-white dark:text-slate-950 border-[#0b6b4f] dark:border-[#4fd1a1]'
+                          : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-800 hover:bg-slate-100/70 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span>{chip.label}</span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded-[10px] text-[11px] font-mono-tabular ${
+                          selected
+                            ? 'bg-white/20 dark:bg-slate-950/20 text-white dark:text-slate-950'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        {chip.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            {errorMsg && (
+              <div
+                role="alert"
+                className="p-3.5 rounded-[16px] bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/70 text-xs text-rose-800 dark:text-rose-200"
+              >
+                {errorMsg}
+              </div>
+            )}
+
+            {/* List Content */}
+            {loading ? (
+              <div className="rounded-[22px] border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-10 text-center text-sm text-slate-500 dark:text-slate-400">
+                Loading staff accounts...
+              </div>
+            ) : filteredUsers.length === 0 ? (
+              <div className="rounded-[22px] border border-dashed border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900/60 p-10 text-center space-y-3">
+                <div className="w-12 h-12 rounded-[16px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 mx-auto flex items-center justify-center">
+                  <Users className="w-6 h-6" />
+                </div>
+                <div className="space-y-1">
+                  <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                    No matching accounts
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+                    No staff accounts match your current search or status filter.
+                  </p>
+                </div>
+                {(search || statusFilter !== 'all') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearch('');
+                      setStatusFilter('all');
+                    }}
+                    className="min-h-[44px] px-4 py-2 rounded-[14px] border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b6b4f] dark:focus-visible:ring-[#4fd1a1]"
+                  >
+                    Clear search and filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {/* Cards View: Always on <720px; optional on >=720px */}
+                <div
+                  className={
+                    viewMode === 'cards'
+                      ? 'grid grid-cols-1 min-[720px]:grid-cols-2 gap-3'
+                      : 'grid grid-cols-1 gap-3 min-[720px]:hidden'
+                  }
+                >
+                  {filteredUsers.map((u) => (
+                    <UserCard
+                      key={u.uid || u.id}
+                      user={u}
+                      officeName={officeName}
+                      onSelect={openUserDetail}
+                    />
+                  ))}
+                </div>
+
+                {/* Table View: Only >=720px when viewMode === 'table' */}
+                {viewMode === 'table' && (
+                  <div className="hidden min-[720px]:block">
+                    <UserTable
+                      users={filteredUsers}
+                      officeName={officeName}
+                      onSelect={openUserDetail}
+                    />
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
       </div>
+
+      {/* Device Detail Bottom Sheet */}
+      {showDevicesTab && (
+        <DeviceDetailSheet
+          open={deviceDetailOpen && Boolean(selectedDeviceEntry)}
+          entry={selectedDeviceEntry}
+          officeName={officeName}
+          busy={actionBusy || submitting}
+          onClose={() => setDeviceDetailOpen(false)}
+          onResetDevice={resetBoundDevice}
+        />
+      )}
 
       {/* Detail Bottom Sheet */}
       <UserDetailSheet

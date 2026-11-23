@@ -1465,3 +1465,127 @@ test('Scoped allow list queries pass static constraint checks across all collect
   await assertSucceeds(getDocs(query(collection(ad1Db, 'reports'), where('districtOfficeId', '==', 'dist1'))));
   await assertSucceeds(getDocs(query(collection(ad1Db, 'auditLogs'), where('districtOfficeId', '==', 'dist1'))));
 });
+
+test('Informational devices subcollection & existing boundDeviceId/resetDevice flows', async () => {
+  const emp1Db = testEnv.authenticatedContext('emp1').firestore();
+  const emp2Db = testEnv.authenticatedContext('emp2').firestore();
+  const unfeo1Db = testEnv.authenticatedContext('unfeo1').firestore();
+  const ad1Db = testEnv.authenticatedContext('ad1').firestore();
+  const adOtherDb = testEnv.authenticatedContext('ad_other').firestore();
+  const adminDb = testEnv.authenticatedContext('admin1').firestore();
+  const bootDb = bootstrapDb();
+
+  // Existing boundDeviceId reset + re-bind flow stays intact
+  await assertSucceeds(
+    updateDoc(doc(unfeo1Db, 'users', 'emp1'), {
+      boundDeviceId: null,
+      updatedAt: serverTimestamp()
+    })
+  );
+  await assertSucceeds(
+    updateDoc(doc(emp1Db, 'users', 'emp1'), {
+      boundDeviceId: 'dev_aabbccddeeff001122334455',
+      updatedAt: serverTimestamp()
+    })
+  );
+  await assertFails(
+    updateDoc(doc(emp1Db, 'users', 'emp1'), {
+      boundDeviceId: 'dev_999999999999999999999999',
+      updatedAt: serverTimestamp()
+    })
+  );
+
+  const validDeviceDoc = {
+    deviceId: 'dev_aabbccddeeff001122334455',
+    name: 'Pixel 8 · Chrome',
+    model: 'Pixel 8',
+    manufacturer: 'Google',
+    platform: 'Android',
+    osVersion: 'Android 14',
+    appVersion: 'web',
+    engine: 'Blink (Chrome 128)',
+    screen: '412x915',
+    timezone: 'Asia/Dhaka',
+    language: 'en-US',
+    ip: '103.10.20.30',
+    firstSeenAt: serverTimestamp(),
+    lastSeenAt: serverTimestamp(),
+    loginCount: 1,
+    status: 'seen'
+  };
+
+  // Owner create succeeds (with ip and blocked without ip)
+  await assertSucceeds(
+    setDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455'), validDeviceDoc)
+  );
+  const blockedWithoutIp = {
+    ...validDeviceDoc,
+    deviceId: 'dev_blocked_device_12345',
+    status: 'blocked'
+  };
+  delete blockedWithoutIp.ip;
+  await assertSucceeds(
+    setDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_blocked_device_12345'), blockedWithoutIp)
+  );
+
+  // Create rejects mismatched doc ID or other user writing
+  await assertFails(
+    setDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_other_id_123456'), validDeviceDoc)
+  );
+  await assertFails(
+    setDoc(doc(emp2Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455'), validDeviceDoc)
+  );
+
+  // Owner update succeeds with loginCount + 1 and immutable deviceId/firstSeenAt
+  await assertSucceeds(
+    updateDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455'), {
+      name: 'Pixel 8 Pro · Chrome',
+      model: 'Pixel 8 Pro',
+      ip: '103.10.20.31',
+      lastSeenAt: serverTimestamp(),
+      loginCount: 2,
+      status: 'seen'
+    })
+  );
+
+  // Reject loginCount jump > 1, firstSeenAt overwrite, or status typo
+  await assertFails(
+    updateDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455'), {
+      lastSeenAt: serverTimestamp(),
+      loginCount: 4
+    })
+  );
+  await assertFails(
+    updateDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455'), {
+      firstSeenAt: serverTimestamp(),
+      lastSeenAt: serverTimestamp(),
+      loginCount: 3
+    })
+  );
+  await assertFails(
+    updateDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455'), {
+      lastSeenAt: serverTimestamp(),
+      loginCount: 3,
+      status: 'bound'
+    })
+  );
+
+  // In-scope admins & owner can read/list; out-of-scope admin & sibling employee denied
+  await assertSucceeds(getDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+  await assertSucceeds(getDocs(collection(emp1Db, 'users', 'emp1', 'devices')));
+  await assertSucceeds(getDoc(doc(unfeo1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+  await assertSucceeds(getDocs(collection(unfeo1Db, 'users', 'emp1', 'devices')));
+  await assertSucceeds(getDoc(doc(ad1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+  await assertSucceeds(getDocs(collection(ad1Db, 'users', 'emp1', 'devices')));
+  await assertSucceeds(getDocs(collection(adminDb, 'users', 'emp1', 'devices')));
+
+  await assertFails(getDoc(doc(emp2Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+  await assertFails(getDocs(collection(emp2Db, 'users', 'emp1', 'devices')));
+  await assertFails(getDoc(doc(adOtherDb, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+  await assertFails(getDocs(collection(adOtherDb, 'users', 'emp1', 'devices')));
+
+  // Delete denied for everyone
+  await assertFails(deleteDoc(doc(emp1Db, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+  await assertFails(deleteDoc(doc(adminDb, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+  await assertFails(deleteDoc(doc(bootDb, 'users', 'emp1', 'devices', 'dev_aabbccddeeff001122334455')));
+});

@@ -83,6 +83,7 @@ Derived review permissions (`leave.review`, `fieldduty.review`, `attendance.sett
 - **Valid Attendance Offices `V(U)`**: `A(U) ∪ { attachedOfficeId, actingOfficeId }`. Staff can check in at one valid office and check out at another valid office on the same day.
 - **Leave/Field Duty Routing `W(U)`**: `attachedOfficeId` if currently attached, else primary `officeId`. Records retain `homeOfficeId` and `homeDistrictOfficeId` so home offices retain read visibility without stealing approval authority.
 - **Assignment History (`/users/{uid}/assignments`)**: Append-only timeline (`primary`, `additional_charge`, `acting_charge`, `attachment`) recording transfers, role/designation changes, charges, and attachments (with optional order PDF/image upload under `orders/{uid}/{file}`). Open entries with `endDate < today` trigger an in-app `"মেয়াদ শেষ – এখনো চালু"` warning and are excluded from the client attendance office picker until closed manually.
+- **Device Insights (`/users/{uid}/devices/{deviceId}`)**: Best-effort, informational device metadata controlled by `DEVICE_INSIGHTS_ENABLED` in `src/config/deviceInsights.js` (default `true`). Records device name, model, manufacturer, platform, OS version, app version, engine, screen, timezone, language, optional client-reported IP (`https://api.ipify.org?format=json`, unverified), timestamps, login count, and `'seen' | 'blocked'` status—throttled to once per 10 minutes per `uid + deviceId`. Device binding and punch verification remain strictly tied to `users/{uid}.boundDeviceId` and the local `dev_...` ID only. Viewable lazily in **Users & Devices -> Devices** (`user.view`) and inside `UserDetailSheet`, while existing binding reset flows use `user.resetDevice`.
 
 ---
 
@@ -162,13 +163,15 @@ Follow this exact deployment order on existing databases:
    node scripts/backfill-attendance-home-office.mjs --apply
    ```
 
-5. **Deploy Firestore & Storage rules + Web App together**:
+5. **Safe Release Order (Rules -> Web App -> APK)**:
    ```bash
    npm run lint
    npm test
    npm run build
-   firebase deploy --only firestore:rules,storage
    ```
+   1. **Deploy the Firestore rules** first (`firebase deploy --only firestore:rules,storage`).
+   2. **Deploy the web app** (`dist/`).
+   3. **Build the new Android APK** via Capacitor.
 
 6. **Bootstrap Super User Smoke Test**:
    - Sign in with the bootstrap email (`absiddik5177@gmail.com`).
@@ -187,4 +190,4 @@ npm run test:rules  # Firestore & Storage emulator security tests (requires Java
 npm run build       # Production bundle in dist/
 ```
 
-For Capacitor Android wrapping, build `dist/` and sync into your Capacitor Android project with `CAMERA`, `ACCESS_FINE_LOCATION`, and `ACCESS_COARSE_LOCATION` permissions declared in `AndroidManifest.xml`.
+For Capacitor Android wrapping, build `dist/` and sync into your Capacitor Android project with `CAMERA`, `ACCESS_FINE_LOCATION`, and `ACCESS_COARSE_LOCATION` permissions declared in `AndroidManifest.xml`. Optionally installing `@capacitor/device` later will automatically enrich device names and models via `window.Capacitor.Plugins.Device.getInfo()`.
