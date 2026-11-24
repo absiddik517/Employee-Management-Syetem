@@ -25,7 +25,59 @@ import {
   toBanglaDigits
 } from '../../utils/dhakaTime.js';
 import { getHighAccuracyPosition, haversineDistanceMeters } from '../../utils/geo.js';
-import { getWorkingOfficeId } from '../../lib/permissions.js';
+import {
+  can as canPerm,
+  getValidAttendanceOfficeIds,
+  getWorkingOfficeId
+} from '../../lib/permissions.js';
+
+function deriveDistrictIdFromOfficeData(officeData, officeId, fallbackCompute) {
+  if (!officeId) return '';
+  if (officeData) {
+    if (officeData.level === 'district') return officeId;
+    if (officeData.level === 'upazila') {
+      return typeof officeData.parentOfficeId === 'string' ? officeData.parentOfficeId : '';
+    }
+    return '';
+  }
+  return typeof fallbackCompute === 'function' ? fallbackCompute(officeId) || '' : '';
+}
+
+function sameStringArray(a, b) {
+  const arrA = Array.isArray(a) ? a : [];
+  const arrB = Array.isArray(b) ? b : [];
+  if (arrA.length !== arrB.length) return false;
+  for (let i = 0; i < arrA.length; i += 1) {
+    if (arrA[i] !== arrB[i]) return false;
+  }
+  return true;
+}
+
+function hasUserAttendanceContextChanged(prevProfile, liveUser) {
+  if (!prevProfile || !liveUser) return false;
+  const prevRole = typeof prevProfile.role === 'string' ? prevProfile.role.trim() : '';
+  const liveRole = typeof liveUser.role === 'string' ? liveUser.role.trim() : '';
+  return (
+    (prevProfile.officeId || '') !== (liveUser.officeId || '') ||
+    (prevProfile.districtOfficeId || '') !== (liveUser.districtOfficeId || '') ||
+    (prevProfile.attachedOfficeId || '') !== (liveUser.attachedOfficeId || '') ||
+    (prevProfile.actingOfficeId || '') !== (liveUser.actingOfficeId || '') ||
+    (prevProfile.actingRoleKey || '') !== (liveUser.actingRoleKey || '') ||
+    prevRole !== liveRole ||
+    (prevProfile.name || '') !== (liveUser.name || '') ||
+    (prevProfile.designation || '') !== (liveUser.designation || '') ||
+    !sameStringArray(prevProfile.additionalOfficeIds, liveUser.additionalOfficeIds)
+  );
+}
+
+function isRawValidAttendanceOffice(userData, officeId) {
+  if (!userData || typeof officeId !== 'string' || !officeId) return false;
+  if (userData.officeId === officeId) return true;
+  if (Array.isArray(userData.additionalOfficeIds) && userData.additionalOfficeIds.includes(officeId)) return true;
+  if (typeof userData.attachedOfficeId === 'string' && userData.attachedOfficeId === officeId) return true;
+  if (typeof userData.actingOfficeId === 'string' && userData.actingOfficeId === officeId) return true;
+  return false;
+}
 
 const SOURCE_LABELS = {
   primary: 'মূল কর্মস্থল',
@@ -40,9 +92,11 @@ export default function EmployeeHomePage() {
     effectiveAuthUser,
     offices,
     userOffice,
+    roleRegistry,
     deviceMismatch,
     localDeviceId,
     computeDistrictOfficeId,
+    fetchPublicBootstrap,
     loadUserProfile
   } = useAuth();
 
@@ -170,13 +224,18 @@ export default function EmployeeHomePage() {
       return { ok: false, message: 'আপনার অ্যাকাউন্টটি সক্রিয় বা অনুমোদিত নয়।' };
     }
 
+    if (typeof localDeviceId !== 'string' || localDeviceId.length < 4 || localDeviceId.length > 128) {
+      return { ok: false, message: 'ডিভাইস আইডি সঠিক নয়। অনুগ্রহ করে পৃষ্ঠাটি রিলোড করুন।' };
+    }
+
+    let boundNow = false;
     if (!userData.boundDeviceId) {
       try {
         await updateDoc(userRef, {
           boundDeviceId: localDeviceId,
           updatedAt: serverTimestamp()
         });
-        await loadUserProfile(profile.uid);
+        boundNow = true;
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, `users/${profile.uid}`);
         return { ok: false, message: 'ডিভাইস নিবন্ধন করা যায়নি।' };
@@ -189,8 +248,48 @@ export default function EmployeeHomePage() {
       };
     }
 
-    return { ok: true, userData };
-  }, [profile?.uid, localDeviceId, loadUserProfile]);
+    const liveRole = typeof userData.role === 'string' ? userData.role.trim() : '';
+    const liveUser = {
+      ...userData,
+      uid: userSnap.id,
+      id: userSnap.id,
+      role: liveRole,
+      boundDeviceId: userData.boundDeviceId || localDeviceId
+    };
+
+    let effectiveRegistry = roleRegistry;
+    if (liveRole) {
+      try {
+        const roleSnap = await getDoc(doc(db, 'roles', liveRole));
+        if (roleSnap.exists()) {
+          effectiveRegistry = {
+            ...effectiveRegistry,
+            [liveRole]: { key: roleSnap.id, ...roleSnap.data() }
+          };
+        } else {
+          const nextReg = { ...(effectiveRegistry || {}) };
+          delete nextReg[liveRole];
+          effectiveRegistry = nextReg;
+        }
+      } catch (roleErr) {
+        console.warn('Live role check fallback notice:', roleErr);
+      }
+    }
+
+    if (!canPerm(liveUser, 'attendance.checkin', null, effectiveRegistry)) {
+      await loadUserProfile(profile.uid);
+      return {
+        ok: false,
+        message: 'আপনার বর্তমান রোলে দৈনিক হাজিরা দেওয়ার অনুমতি নেই। অনুগ্রহ করে প্রশাসকের সাথে যোগাযোগ করুন।'
+      };
+    }
+
+    if (boundNow || hasUserAttendanceContextChanged(profile, liveUser)) {
+      await loadUserProfile(profile.uid);
+    }
+
+    return { ok: true, userData: liveUser };
+  }, [profile, roleRegistry, localDeviceId, loadUserProfile]);
 
   const loadTodayData = useCallback(async () => {
     if (!profile) return;
@@ -327,6 +426,19 @@ export default function EmployeeHomePage() {
         return;
       }
 
+      const liveValidOfficeIds = getValidAttendanceOfficeIds(liveCheck.userData);
+      if (
+        !liveValidOfficeIds.includes(targetOffice.id) ||
+        !isRawValidAttendanceOffice(liveCheck.userData, targetOffice.id)
+      ) {
+        await fetchPublicBootstrap();
+        setPendingPunchOffice(null);
+        setActionError(
+          'আপনার পদায়ন বা দায়িত্বপ্রাপ্ত অফিস সম্প্রতি পরিবর্তিত হয়েছে। অনুগ্রহ করে আপডেট হওয়া তালিকা থেকে অফিস নির্বাচন করে আবার চেষ্টা করুন।'
+        );
+        return;
+      }
+
       const pos = await getHighAccuracyPosition();
       if (!Number.isFinite(pos.lat) || !Number.isFinite(pos.lng) || !Number.isFinite(pos.accuracy) || pos.accuracy < 0) {
         setActionError('GPS স্থানাঙ্ক সঠিক পাওয়া যায়নি। অনুগ্রহ করে পুনরায় চেষ্টা করুন।');
@@ -343,11 +455,13 @@ export default function EmployeeHomePage() {
       if (!forcedOffice && !userPickedOffice && validOffices.length > 1) {
         const matches = computeMatchesForFix(pos.lat, pos.lng);
         if (matches.length === 1) {
-          targetOffice = matches[0].office;
-          setSelectedOfficeId(targetOffice.id);
-          setGpsMatchHint(
-            `GPS অনুযায়ী "${targetOffice.name}" স্বয়ংক্রিয়ভাবে নির্বাচিত হয়েছে।`
-          );
+          if (liveValidOfficeIds.includes(matches[0].office.id)) {
+            targetOffice = matches[0].office;
+            setSelectedOfficeId(targetOffice.id);
+            setGpsMatchHint(
+              `GPS অনুযায়ী "${targetOffice.name}" স্বয়ংক্রিয়ভাবে নির্বাচিত হয়েছে।`
+            );
+          }
         } else if (matches.length > 1) {
           setGpsMultiMatches(matches);
           setGpsMatchHint(
@@ -355,6 +469,17 @@ export default function EmployeeHomePage() {
           );
           return;
         }
+      }
+
+      const liveOfficeSnap = await getDoc(doc(db, 'offices', targetOffice.id)).catch(() => null);
+      if (liveOfficeSnap) {
+        if (!liveOfficeSnap.exists()) {
+          await fetchPublicBootstrap();
+          setPendingPunchOffice(null);
+          setActionError('নির্বাচিত অফিসটি সিস্টেমে পাওয়া যায়নি।');
+          return;
+        }
+        targetOffice = { ...targetOffice, id: liveOfficeSnap.id, ...liveOfficeSnap.data() };
       }
 
       const officeLat = Number(targetOffice.lat);
@@ -419,6 +544,42 @@ export default function EmployeeHomePage() {
         return;
       }
 
+      const liveUser = liveCheck.userData || profile;
+      const punchTargetOffice = pendingPunchOffice || office;
+      if (!punchTargetOffice) {
+        setActionError('নির্বাচিত অফিসের তথ্য পাওয়া যায়নি।');
+        return;
+      }
+
+      const liveValidOfficeIds = getValidAttendanceOfficeIds(liveUser);
+      if (
+        !liveValidOfficeIds.includes(punchTargetOffice.id) ||
+        !isRawValidAttendanceOffice(liveUser, punchTargetOffice.id)
+      ) {
+        await fetchPublicBootstrap();
+        setPendingPunchOffice(null);
+        setActionError(
+          'আপনার অফিস পদায়ন বা দায়িত্ব সম্প্রতি পরিবর্তিত হয়েছে। অনুগ্রহ করে আপডেটকৃত অফিস নির্বাচন করে পুনরায় চেষ্টা করুন।'
+        );
+        return;
+      }
+
+      const targetOfficeSnap = await getDoc(doc(db, 'offices', punchTargetOffice.id));
+      if (!targetOfficeSnap.exists()) {
+        await fetchPublicBootstrap();
+        setPendingPunchOffice(null);
+        setActionError('নির্বাচিত অফিসটি সিস্টেমে পাওয়া যায়নি।');
+        return;
+      }
+      const liveTargetOffice = { ...punchTargetOffice, id: targetOfficeSnap.id, ...targetOfficeSnap.data() };
+      const targetDistrictId = String(
+        deriveDistrictIdFromOfficeData(
+          liveTargetOffice,
+          liveTargetOffice.id,
+          computeDistrictOfficeId
+        )
+      ).slice(0, 128);
+
       const uploadRes = await uploadImageSafe(targetPath, blob, 'image/jpeg');
       const photoPath = uploadRes.ok ? targetPath : 'storage-unavailable/no-bucket';
       const photoUnavailable = !uploadRes.ok;
@@ -434,14 +595,37 @@ export default function EmployeeHomePage() {
         photoDeleted: photoUnavailable
       };
 
-      const punchTargetOffice = pendingPunchOffice || office;
-      if (!punchTargetOffice) {
-        setActionError('নির্বাচিত অফিসের তথ্য পাওয়া যায়নি।');
+      const hasValidPunchData =
+        Number.isFinite(punchObj.lat) &&
+        punchObj.lat >= -90 &&
+        punchObj.lat <= 90 &&
+        Number.isFinite(punchObj.lng) &&
+        punchObj.lng >= -180 &&
+        punchObj.lng <= 180 &&
+        Number.isFinite(punchObj.accuracy) &&
+        punchObj.accuracy >= 0 &&
+        punchObj.accuracy <= 50 &&
+        Number.isFinite(punchObj.distanceMeters) &&
+        punchObj.distanceMeters >= 0 &&
+        typeof punchObj.deviceId === 'string' &&
+        punchObj.deviceId.length >= 4 &&
+        punchObj.deviceId.length <= 128 &&
+        typeof liveUser.boundDeviceId === 'string' &&
+        liveUser.boundDeviceId === punchObj.deviceId &&
+        typeof punchObj.photoPath === 'string' &&
+        punchObj.photoPath.length >= 5 &&
+        punchObj.photoPath.length <= 300;
+
+      if (!hasValidPunchData) {
+        setActionError('লোকেশন বা ডিভাইস তথ্য সঠিক নয়। অনুগ্রহ করে পৃষ্ঠাটি রিফ্রেশ করে আবার চেষ্টা করুন।');
         return;
       }
 
       if (punchType === 'in') {
-        const existingSnap = await getDoc(doc(db, 'attendance', docId)).catch(() => null);
+        const existingSnap = await getDoc(doc(db, 'attendance', docId)).catch((checkErr) => {
+          console.warn('Existing attendance pre-check notice:', checkErr?.code || checkErr?.message);
+          return null;
+        });
         if (existingSnap && existingSnap.exists()) {
           await loadTodayData();
           setActionError('আজকের হাজিরা রেকর্ড ইতোমধ্যে বিদ্যমান রয়েছে। পৃষ্ঠাটি রিফ্রেশ করে দেখুন।');
@@ -450,27 +634,40 @@ export default function EmployeeHomePage() {
 
         const initialStatus = computeInitialStatus(
           new Date(),
-          punchTargetOffice.startTime,
-          punchTargetOffice.graceMinutes
+          liveTargetOffice.startTime,
+          liveTargetOffice.graceMinutes
         );
-        const employeeName = String(profile.name || profile.email || 'User').trim().slice(0, 120) || 'User';
-        const designation = String(profile.designation || '').trim().slice(0, 120);
-        const targetDistrictId = String(computeDistrictOfficeId(punchTargetOffice.id) || '').slice(0, 128);
-        const homeOfficeId = String(profile.officeId || '').slice(0, 128);
-        const homeDistrictOfficeId = String(
-          profile.districtOfficeId || computeDistrictOfficeId(homeOfficeId) || ''
-        ).slice(0, 128);
+        const employeeName =
+          String(liveUser.name || liveUser.email || profile.email || 'User').trim().slice(0, 120) || 'User';
+        const designation = String(liveUser.designation || '').trim().slice(0, 120);
+        const homeOfficeId = typeof liveUser.officeId === 'string' ? liveUser.officeId.slice(0, 128) : '';
+
+        let homeDistrictOfficeId = '';
+        if (homeOfficeId) {
+          if (homeOfficeId === liveTargetOffice.id) {
+            homeDistrictOfficeId = targetDistrictId;
+          } else {
+            const homeOfficeSnap = await getDoc(doc(db, 'offices', homeOfficeId)).catch(() => null);
+            homeDistrictOfficeId = String(
+              deriveDistrictIdFromOfficeData(
+                homeOfficeSnap?.exists() ? homeOfficeSnap.data() : null,
+                homeOfficeId,
+                computeDistrictOfficeId
+              ) || liveUser.districtOfficeId || ''
+            ).slice(0, 128);
+          }
+        }
 
         const payload = {
           uid,
           employeeName,
           designation,
-          officeId: punchTargetOffice.id,
+          officeId: liveTargetOffice.id,
           districtOfficeId: targetDistrictId,
           homeOfficeId,
           homeDistrictOfficeId,
           date: todayStr,
-          isFieldDuty: isTodayFieldDuty,
+          isFieldDuty: Boolean(isTodayFieldDuty),
           checkIn: punchObj,
           checkOut: null,
           initialStatus,
@@ -489,21 +686,33 @@ export default function EmployeeHomePage() {
         try {
           await setDoc(doc(db, 'attendance', docId), payload);
         } catch (err) {
+          console.error('Attendance create failed context:', {
+            docId,
+            officeId: payload.officeId,
+            districtOfficeId: payload.districtOfficeId,
+            homeOfficeId: payload.homeOfficeId,
+            role: liveUser.role,
+            approvalStatus: liveUser.approvalStatus,
+            status: liveUser.status,
+            boundMatches: liveUser.boundDeviceId === punchObj.deviceId,
+            accuracy: punchObj.accuracy,
+            distanceMeters: punchObj.distanceMeters,
+            photoDeleted: payload.photoDeleted,
+            errorCode: err?.code || null
+          });
           handleFirestoreError(err, OperationType.CREATE, `attendance/${docId}`);
         }
         setActionSuccess(
           photoUnavailable
-            ? `${punchTargetOffice.name}-এ আজকের হাজিরা সংরক্ষিত হয়েছে (${initialStatus}), তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।`
-            : `${punchTargetOffice.name}-এ আজকের হাজিরা সফলভাবে সংরক্ষিত হয়েছে (${initialStatus})।`
+            ? `${liveTargetOffice.name}-এ আজকের হাজিরা সংরক্ষিত হয়েছে (${initialStatus}), তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।`
+            : `${liveTargetOffice.name}-এ আজকের হাজিরা সফলভাবে সংরক্ষিত হয়েছে (${initialStatus})।`
         );
       } else {
-        const checkOutDistrictOfficeId = String(
-          computeDistrictOfficeId(punchTargetOffice.id) || ''
-        ).slice(0, 128);
+        const checkOutDistrictOfficeId = targetDistrictId;
         try {
           await updateDoc(doc(db, 'attendance', docId), {
             checkOut: punchObj,
-            checkOutOfficeId: punchTargetOffice.id,
+            checkOutOfficeId: liveTargetOffice.id,
             checkOutDistrictOfficeId,
             updatedAt: serverTimestamp()
           });
@@ -512,8 +721,8 @@ export default function EmployeeHomePage() {
         }
         setActionSuccess(
           photoUnavailable
-            ? `${punchTargetOffice.name}-এ আজকের প্রস্থান সংরক্ষিত হয়েছে, তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।`
-            : `${punchTargetOffice.name}-এ আজকের প্রস্থান সফলভাবে সংরক্ষিত হয়েছে।`
+            ? `${liveTargetOffice.name}-এ আজকের প্রস্থান সংরক্ষিত হয়েছে, তবে Firebase Storage চালু না থাকায় সেলফি আপলোড হয়নি।`
+            : `${liveTargetOffice.name}-এ আজকের প্রস্থান সফলভাবে সংরক্ষিত হয়েছে।`
         );
       }
 

@@ -59,9 +59,12 @@ service cloud.firestore {
 
     // Checks whether the caller has an approved, active profile in /users/{uid}.
     function isApprovedActiveUser() {
-      return userExists()
-        && callerData().approvalStatus == 'approved'
-        && callerData().status == 'active';
+      return userExists() && isApprovedUserDoc();
+    }
+
+    function isApprovedUserDoc() {
+      let u = callerData();
+      return u.approvalStatus == 'approved' && u.status == 'active';
     }
 
     // Identifies the bootstrap super user strictly by verified Firebase Auth email.
@@ -73,17 +76,24 @@ service cloud.firestore {
 
     // Reads the caller's assigned role key from their active, approved user profile.
     function callerRoleKey() {
-      return isApprovedActiveUser()
-        && 'role' in callerData()
-        && isNonEmptyStr(callerData().role)
-        ? callerData().role
+      return userExists() ? callerRoleKeyLoaded() : '';
+    }
+
+    function callerRoleKeyLoaded() {
+      let u = callerData();
+      return u.approvalStatus == 'approved'
+        && u.status == 'active'
+        && 'role' in u
+        && isNonEmptyStr(u.role)
+        ? u.role.trim()
         : '';
     }
 
     // Checks whether a /roles/{roleKey} document exists for a given role key.
     function roleDocExists(rKey) {
-      return isNonEmptyStr(rKey)
-        && exists(/databases/$(database)/documents/roles/$(rKey));
+      let k = rKey;
+      return isNonEmptyStr(k)
+        && exists(/databases/$(database)/documents/roles/$(k));
     }
 
     // Reads the /roles/{roleKey} document data for a given role key.
@@ -93,9 +103,13 @@ service cloud.firestore {
 
     // Reads numeric rank for a role key (0 if absent or missing).
     function rankOfRoleKey(rKey) {
-      return roleDocExists(rKey) && 'rank' in roleDocData(rKey) && roleDocData(rKey).rank is int
-        ? roleDocData(rKey).rank
-        : 0;
+      let k = rKey;
+      return roleDocExists(k) ? rankOfLoadedRole(k) : 0;
+    }
+
+    function rankOfLoadedRole(k) {
+      let d = roleDocData(k);
+      return 'rank' in d && d.rank is int ? d.rank : 0;
     }
 
     // Returns the caller's own role numeric rank.
@@ -105,23 +119,35 @@ service cloud.firestore {
 
     // Checks whether a role key has the isSuper flag enabled.
     function roleIsSuper(rKey) {
-      return roleDocExists(rKey)
-        && 'isSuper' in roleDocData(rKey)
-        && roleDocData(rKey).isSuper == true;
+      let k = rKey;
+      return roleDocExists(k) && roleIsSuperLoaded(k);
+    }
+
+    function roleIsSuperLoaded(k) {
+      let d = roleDocData(k);
+      return 'isSuper' in d && d.isSuper == true;
     }
 
     // Checks whether a role key allows receiving charges or attachments.
     function roleIsChargeEligible(rKey) {
-      return roleDocExists(rKey)
-        && 'chargeEligible' in roleDocData(rKey)
-        && roleDocData(rKey).chargeEligible == true;
+      let k = rKey;
+      return roleDocExists(k) && roleIsChargeEligibleLoaded(k);
+    }
+
+    function roleIsChargeEligibleLoaded(k) {
+      let d = roleDocData(k);
+      return 'chargeEligible' in d && d.chargeEligible == true;
     }
 
     // Checks whether a role key can be assigned as an acting charge role.
     function roleIsActingEligible(rKey) {
-      return roleDocExists(rKey)
-        && 'actingEligible' in roleDocData(rKey)
-        && roleDocData(rKey).actingEligible == true;
+      let k = rKey;
+      return roleDocExists(k) && roleIsActingEligibleLoaded(k);
+    }
+
+    function roleIsActingEligibleLoaded(k) {
+      let d = roleDocData(k);
+      return 'actingEligible' in d && d.actingEligible == true;
     }
 
     // Checks whether the caller holds super-user status (bootstrap identity or isSuper role).
@@ -165,12 +191,17 @@ service cloud.firestore {
 
     // Reads a permission scope from a specific role document ('' if absent or 'none').
     function rolePermScope(rKey, perm) {
-      return roleDocExists(rKey)
-        && 'permissions' in roleDocData(rKey)
-        && roleDocData(rKey).permissions is map
-        && perm in roleDocData(rKey).permissions
-        && roleDocData(rKey).permissions[perm] in ['self', 'office', 'subtree', 'all']
-        ? roleDocData(rKey).permissions[perm]
+      let k = rKey;
+      return roleDocExists(k) ? rolePermScopeLoaded(k, perm) : '';
+    }
+
+    function rolePermScopeLoaded(k, perm) {
+      let d = roleDocData(k);
+      return 'permissions' in d
+        && d.permissions is map
+        && perm in d.permissions
+        && d.permissions[perm] in ['self', 'office', 'subtree', 'all']
+        ? d.permissions[perm]
         : '';
     }
 
@@ -183,31 +214,39 @@ service cloud.firestore {
 
     // Checks whether the caller currently holds a valid, acting-eligible acting charge.
     function hasValidActingCharge() {
-      return isApprovedActiveUser()
-        && 'actingOfficeId' in callerData()
-        && isNonEmptyStr(callerData().actingOfficeId)
-        && 'actingRoleKey' in callerData()
-        && isNonEmptyStr(callerData().actingRoleKey)
-        && roleIsActingEligible(callerData().actingRoleKey);
+      return isApprovedActiveUser() && hasValidActingChargeLoaded();
+    }
+
+    function hasValidActingChargeLoaded() {
+      let u = callerData();
+      return 'actingOfficeId' in u
+        && isNonEmptyStr(u.actingOfficeId)
+        && 'actingRoleKey' in u
+        && isNonEmptyStr(u.actingRoleKey)
+        && roleIsActingEligible(u.actingRoleKey.trim());
     }
 
     // Resolves the acting role's permission scope (strictly 'office' or 'subtree' for allowed keys).
     function actingPermScope(perm) {
-      return hasValidActingCharge()
-        && isActingAllowedPerm(perm)
-        && rolePermScope(callerData().actingRoleKey, perm) in ['office', 'subtree']
-        ? rolePermScope(callerData().actingRoleKey, perm)
+      return hasValidActingCharge() && isActingAllowedPerm(perm)
+        ? actingPermScopeLoaded(perm)
         : '';
+    }
+
+    function actingPermScopeLoaded(perm) {
+      let scope = rolePermScope(callerData().actingRoleKey.trim(), perm);
+      return scope in ['office', 'subtree'] ? scope : '';
     }
 
     // Returns the acting role's numeric rank when the caller has a valid acting charge.
     function actingRank() {
-      return hasValidActingCharge() ? rankOfRoleKey(callerData().actingRoleKey) : 0;
+      return hasValidActingCharge() ? rankOfRoleKey(callerData().actingRoleKey.trim()) : 0;
     }
 
     // Safely reads a string field from a document data map.
     function docStr(docData, fieldName) {
-      return fieldName in docData && docData[fieldName] is string ? docData[fieldName] : '';
+      let d = docData;
+      return fieldName in d && d[fieldName] is string ? d[fieldName] : '';
     }
 
     // Safely reads officeId from a document data map.
@@ -222,15 +261,19 @@ service cloud.firestore {
 
     // Checks whether an office ID belongs to the caller's authority set A(caller).
     function inAuthorityOffices(val) {
-      return isNonEmptyStr(val)
+      let v = val;
+      return isNonEmptyStr(v)
         && isApprovedActiveUser()
-        && (
-          ('officeId' in callerData() && val == callerData().officeId)
-          || (
-            'additionalOfficeIds' in callerData()
-            && callerData().additionalOfficeIds is list
-            && val in callerData().additionalOfficeIds
-          )
+        && inAuthorityOfficesLoaded(v);
+    }
+
+    function inAuthorityOfficesLoaded(v) {
+      let u = callerData();
+      return ('officeId' in u && v == u.officeId)
+        || (
+          'additionalOfficeIds' in u
+          && u.additionalOfficeIds is list
+          && v in u.additionalOfficeIds
         );
     }
 
@@ -238,14 +281,17 @@ service cloud.firestore {
     function listOverlapsAuthorityOffices(arr) {
       return arr is list
         && isApprovedActiveUser()
-        && (
-          ('officeId' in callerData() && isNonEmptyStr(callerData().officeId) && callerData().officeId in arr)
-          || (
-            'additionalOfficeIds' in callerData()
-            && callerData().additionalOfficeIds is list
-            && callerData().additionalOfficeIds.size() > 0
-            && arr.hasAny(callerData().additionalOfficeIds)
-          )
+        && listOverlapsAuthorityOfficesLoaded(arr);
+    }
+
+    function listOverlapsAuthorityOfficesLoaded(arr) {
+      let u = callerData();
+      return ('officeId' in u && isNonEmptyStr(u.officeId) && u.officeId in arr)
+        || (
+          'additionalOfficeIds' in u
+          && u.additionalOfficeIds is list
+          && u.additionalOfficeIds.size() > 0
+          && arr.hasAny(u.additionalOfficeIds)
         );
     }
 
@@ -262,37 +308,58 @@ service cloud.firestore {
 
     // Checks whether an office ID is inside userData's valid attendance set V(user).
     function inValidAttendanceOffices(userData, val) {
-      return isNonEmptyStr(val)
+      let u = userData;
+      let v = val;
+      return isNonEmptyStr(v)
         && (
-          ('officeId' in userData && val == userData.officeId)
-          || ('additionalOfficeIds' in userData && userData.additionalOfficeIds is list && val in userData.additionalOfficeIds)
-          || ('attachedOfficeId' in userData && userData.attachedOfficeId is string && val == userData.attachedOfficeId)
-          || ('actingOfficeId' in userData && userData.actingOfficeId is string && val == userData.actingOfficeId)
+          ('officeId' in u && v == u.officeId)
+          || ('additionalOfficeIds' in u && u.additionalOfficeIds is list && v in u.additionalOfficeIds)
+          || ('attachedOfficeId' in u && u.attachedOfficeId is string && v == u.attachedOfficeId)
+          || ('actingOfficeId' in u && u.actingOfficeId is string && v == u.actingOfficeId)
         );
     }
 
     // Derives working office W(user) for leave and field duty routing.
     function workingOfficeId(userData) {
-      return 'attachedOfficeId' in userData && isNonEmptyStr(userData.attachedOfficeId)
-        ? userData.attachedOfficeId
-        : docOfficeId(userData);
+      let u = userData;
+      return 'attachedOfficeId' in u && isNonEmptyStr(u.attachedOfficeId)
+        ? u.attachedOfficeId
+        : docOfficeId(u);
     }
 
     // Derives the canonical districtOfficeId from /offices/{officeId}.
     function derivedDistrictId(officeId) {
-      return isNonEmptyStr(officeId) && exists(/databases/$(database)/documents/offices/$(officeId))
-        ? (
-          get(/databases/$(database)/documents/offices/$(officeId)).data.level == 'district'
-            ? officeId
-            : (
-              get(/databases/$(database)/documents/offices/$(officeId)).data.level == 'upazila'
-              && 'parentOfficeId' in get(/databases/$(database)/documents/offices/$(officeId)).data
-              && get(/databases/$(database)/documents/offices/$(officeId)).data.parentOfficeId is string
-                ? get(/databases/$(database)/documents/offices/$(officeId)).data.parentOfficeId
-                : ''
-            )
-        )
+      let oid = officeId;
+      return isNonEmptyStr(oid) && exists(/databases/$(database)/documents/offices/$(oid))
+        ? derivedDistrictIdLoaded(oid)
         : '';
+    }
+
+    function derivedDistrictIdLoaded(oid) {
+      let o = get(/databases/$(database)/documents/offices/$(oid)).data;
+      return o.level == 'district'
+        ? oid
+        : (
+          o.level == 'upazila'
+          && 'parentOfficeId' in o
+          && o.parentOfficeId is string
+            ? o.parentOfficeId
+            : ''
+        );
+    }
+
+    // Checks that a punch deviceId matches the caller's boundDeviceId string.
+    function callerMatchesBoundDevice(devId) {
+      let u = callerData();
+      return 'boundDeviceId' in u
+        && u.boundDeviceId is string
+        && devId == u.boundDeviceId;
+    }
+
+    // Checks that an incoming homeOfficeId equals caller's officeId.
+    function incomingHomeMatchesCallerHome(homeOfficeVal) {
+      let u = callerData();
+      return homeOfficeVal == docOfficeId(u);
     }
 
     // Evaluates whether a scope string over A(caller) matches an office/district pair (for write/existing checks).
@@ -530,26 +597,38 @@ service cloud.firestore {
 
     // Reads a review scope for (roleKey, kind, applicantRoleKey) from roles/{roleKey}.review.
     function roleReviewScopeForApplicant(rKey, kind, applicantRoleKey) {
-      return roleDocExists(rKey)
-        && isNonEmptyStr(applicantRoleKey)
-        && 'review' in roleDocData(rKey)
-        && roleDocData(rKey).review is map
-        && kind in roleDocData(rKey).review
-        && roleDocData(rKey).review[kind] is map
-        && applicantRoleKey in roleDocData(rKey).review[kind]
-        && roleDocData(rKey).review[kind][applicantRoleKey] in ['office', 'subtree', 'all']
-        ? roleDocData(rKey).review[kind][applicantRoleKey]
+      let k = rKey;
+      let ak = applicantRoleKey;
+      return roleDocExists(k) && isNonEmptyStr(ak)
+        ? roleReviewScopeLoaded(k, kind, ak)
+        : '';
+    }
+
+    function roleReviewScopeLoaded(k, kind, ak) {
+      let d = roleDocData(k);
+      return 'review' in d
+        && d.review is map
+        && kind in d.review
+        && d.review[kind] is map
+        && ak in d.review[kind]
+        && d.review[kind][ak] in ['office', 'subtree', 'all']
+        ? d.review[kind][ak]
         : '';
     }
 
     // Checks whether caller's role has any review scope equal to scopeName for get/list queries.
     function roleHasAnyReviewScope(rKey, kind, scopeName) {
-      return roleDocExists(rKey)
-        && 'review' in roleDocData(rKey)
-        && roleDocData(rKey).review is map
-        && kind in roleDocData(rKey).review
-        && roleDocData(rKey).review[kind] is map
-        && roleDocData(rKey).review[kind].values().hasAny([scopeName]);
+      let k = rKey;
+      return roleDocExists(k) && roleHasAnyReviewScopeLoaded(k, kind, scopeName);
+    }
+
+    function roleHasAnyReviewScopeLoaded(k, kind, scopeName) {
+      let d = roleDocData(k);
+      return 'review' in d
+        && d.review is map
+        && kind in d.review
+        && d.review[kind] is map
+        && d.review[kind].values().hasAny([scopeName]);
     }
 
     // Static-field visibility check derived from caller's or acting role's review map (without per-doc user lookup).
@@ -602,35 +681,20 @@ service cloud.firestore {
         && isNonEmptyStr(applicantUid)
         && applicantUid != request.auth.uid
         && exists(/databases/$(database)/documents/users/$(applicantUid))
-        && 'role' in get(/databases/$(database)/documents/users/$(applicantUid)).data
-        && isNonEmptyStr(get(/databases/$(database)/documents/users/$(applicantUid)).data.role)
+        && canReviewDocLoaded(kind, applicantUid, officeVal, districtVal);
+    }
+
+    function canReviewDocLoaded(kind, applicantUid, officeVal, districtVal) {
+      let appData = get(/databases/$(database)/documents/users/$(applicantUid)).data;
+      let appRole = 'role' in appData && isNonEmptyStr(appData.role) ? appData.role.trim() : '';
+      let ownScope = isNonEmptyStr(appRole) ? roleReviewScopeForApplicant(callerRoleKey(), kind, appRole) : '';
+      let actScope = isNonEmptyStr(appRole) && hasValidActingCharge()
+        ? roleReviewScopeForApplicant(callerData().actingRoleKey.trim(), kind, appRole)
+        : '';
+      return isNonEmptyStr(appRole)
         && (
-          scopeMatchesAuthority(
-            roleReviewScopeForApplicant(
-              callerRoleKey(),
-              kind,
-              get(/databases/$(database)/documents/users/$(applicantUid)).data.role
-            ),
-            officeVal,
-            districtVal
-          )
-          || (
-            hasValidActingCharge()
-            && roleReviewScopeForApplicant(
-              callerData().actingRoleKey,
-              kind,
-              get(/databases/$(database)/documents/users/$(applicantUid)).data.role
-            ) in ['office', 'subtree']
-            && scopeMatchesActing(
-              roleReviewScopeForApplicant(
-                callerData().actingRoleKey,
-                kind,
-                get(/databases/$(database)/documents/users/$(applicantUid)).data.role
-              ),
-              officeVal,
-              districtVal
-            )
-          )
+          scopeMatchesAuthority(ownScope, officeVal, districtVal)
+          || (actScope in ['office', 'subtree'] && scopeMatchesActing(actScope, officeVal, districtVal))
         );
     }
 
@@ -713,7 +777,8 @@ service cloud.firestore {
 
     // Validates optional string with maximum length.
     function isOptString(val, maxLen) {
-      return val == null || (val is string && val.size() <= maxLen);
+      let v = val;
+      return v == null || (v is string && v.size() <= maxLen);
     }
 
     // Validates optional timestamp.
@@ -1010,18 +1075,19 @@ service cloud.firestore {
 
     // Validates an attendance check-in or check-out punch object.
     function isValidPunch(punch) {
-      return punch is map
-        && punch.keys().hasAll(['time', 'lat', 'lng', 'accuracy', 'distanceMeters', 'deviceId', 'photoPath', 'photoDeleted'])
-        && punch.keys().hasOnly(['time', 'lat', 'lng', 'accuracy', 'distanceMeters', 'deviceId', 'photoPath', 'photoDeleted', 'photoDeletedAt'])
-        && punch.time is timestamp
-        && punch.lat is number && punch.lat >= -90 && punch.lat <= 90
-        && punch.lng is number && punch.lng >= -180 && punch.lng <= 180
-        && punch.accuracy is number && punch.accuracy >= 0 && punch.accuracy <= 50
-        && punch.distanceMeters is number && punch.distanceMeters >= 0
-        && punch.deviceId is string && punch.deviceId.size() >= 4 && punch.deviceId.size() <= 128
-        && punch.photoPath is string && punch.photoPath.size() >= 5 && punch.photoPath.size() <= 300
-        && punch.photoDeleted is bool
-        && (!('photoDeletedAt' in punch) || isOptTimestamp(punch.photoDeletedAt));
+      let p = punch;
+      return p is map
+        && p.keys().hasAll(['time', 'lat', 'lng', 'accuracy', 'distanceMeters', 'deviceId', 'photoPath', 'photoDeleted'])
+        && p.keys().hasOnly(['time', 'lat', 'lng', 'accuracy', 'distanceMeters', 'deviceId', 'photoPath', 'photoDeleted', 'photoDeletedAt'])
+        && p.time is timestamp
+        && p.lat is number && p.lat >= -90 && p.lat <= 90
+        && p.lng is number && p.lng >= -180 && p.lng <= 180
+        && p.accuracy is number && p.accuracy >= 0 && p.accuracy <= 50
+        && p.distanceMeters is number && p.distanceMeters >= 0
+        && p.deviceId is string && p.deviceId.size() >= 4 && p.deviceId.size() <= 128
+        && p.photoPath is string && p.photoPath.size() >= 5 && p.photoPath.size() <= 300
+        && p.photoDeleted is bool
+        && (!('photoDeletedAt' in p) || isOptTimestamp(p.photoDeletedAt));
     }
 
     // Ensures settle and purge branches only alter photoDeleted and photoDeletedAt inside a punch map.
@@ -1037,8 +1103,9 @@ service cloud.firestore {
 
     // Validates /attendance/{attendanceId} document schema.
     function isValidAttendance(data) {
-      return data.keys().hasAll(['uid', 'employeeName', 'officeId', 'date', 'initialStatus', 'settled', 'photoDeleted', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly([
+      let d = data;
+      return d.keys().hasAll(['uid', 'employeeName', 'officeId', 'date', 'initialStatus', 'settled', 'photoDeleted', 'createdAt', 'updatedAt'])
+        && d.keys().hasOnly([
           'uid', 'employeeName', 'designation',
           'officeId', 'districtOfficeId', 'homeOfficeId', 'homeDistrictOfficeId',
           'checkOutOfficeId', 'checkOutDistrictOfficeId',
@@ -1046,30 +1113,30 @@ service cloud.firestore {
           'initialStatus', 'finalStatus', 'settled', 'settledBy', 'settledByName', 'settledAt', 'districtComment',
           'photoDeleted', 'photoDeletedAt', 'createdAt', 'updatedAt'
         ])
-        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
-        && data.employeeName is string && data.employeeName.size() >= 1 && data.employeeName.size() <= 120
-        && (!('designation' in data) || isOptString(data.designation, 120))
-        && data.officeId is string && data.officeId.size() >= 1 && data.officeId.size() <= 128
-        && (!('districtOfficeId' in data) || isOptString(data.districtOfficeId, 128))
-        && (!('homeOfficeId' in data) || isOptString(data.homeOfficeId, 128))
-        && (!('homeDistrictOfficeId' in data) || isOptString(data.homeDistrictOfficeId, 128))
-        && (!('checkOutOfficeId' in data) || isOptString(data.checkOutOfficeId, 128))
-        && (!('checkOutDistrictOfficeId' in data) || isOptString(data.checkOutDistrictOfficeId, 128))
-        && isValidDateStr(data.date)
-        && (!('isFieldDuty' in data) || data.isFieldDuty is bool)
-        && (!('checkIn' in data) || data.checkIn == null || isValidPunch(data.checkIn))
-        && (!('checkOut' in data) || data.checkOut == null || isValidPunch(data.checkOut))
-        && data.initialStatus in ['সময়মতো', 'বিলম্বিত', 'Absent (প্রস্তাবিত)']
-        && (!('finalStatus' in data) || data.finalStatus == null || data.finalStatus in ['On Time', 'Late', 'Leave', 'Absent'])
-        && data.settled is bool
-        && (!('settledBy' in data) || isOptString(data.settledBy, 128))
-        && (!('settledByName' in data) || isOptString(data.settledByName, 120))
-        && (!('settledAt' in data) || isOptTimestamp(data.settledAt))
-        && (!('districtComment' in data) || isOptString(data.districtComment, 500))
-        && data.photoDeleted is bool
-        && (!('photoDeletedAt' in data) || isOptTimestamp(data.photoDeletedAt))
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp;
+        && d.uid is string && d.uid.size() >= 1 && d.uid.size() <= 128
+        && d.employeeName is string && d.employeeName.size() >= 1 && d.employeeName.size() <= 120
+        && (!('designation' in d) || isOptString(d.designation, 120))
+        && d.officeId is string && d.officeId.size() >= 1 && d.officeId.size() <= 128
+        && (!('districtOfficeId' in d) || isOptString(d.districtOfficeId, 128))
+        && (!('homeOfficeId' in d) || isOptString(d.homeOfficeId, 128))
+        && (!('homeDistrictOfficeId' in d) || isOptString(d.homeDistrictOfficeId, 128))
+        && (!('checkOutOfficeId' in d) || isOptString(d.checkOutOfficeId, 128))
+        && (!('checkOutDistrictOfficeId' in d) || isOptString(d.checkOutDistrictOfficeId, 128))
+        && isValidDateStr(d.date)
+        && (!('isFieldDuty' in d) || d.isFieldDuty is bool)
+        && (!('checkIn' in d) || d.checkIn == null || isValidPunch(d.checkIn))
+        && (!('checkOut' in d) || d.checkOut == null || isValidPunch(d.checkOut))
+        && d.initialStatus in ['সময়মতো', 'বিলম্বিত', 'Absent (প্রস্তাবিত)']
+        && (!('finalStatus' in d) || d.finalStatus == null || d.finalStatus in ['On Time', 'Late', 'Leave', 'Absent'])
+        && d.settled is bool
+        && (!('settledBy' in d) || isOptString(d.settledBy, 128))
+        && (!('settledByName' in d) || isOptString(d.settledByName, 120))
+        && (!('settledAt' in d) || isOptTimestamp(d.settledAt))
+        && (!('districtComment' in d) || isOptString(d.districtComment, 500))
+        && d.photoDeleted is bool
+        && (!('photoDeletedAt' in d) || isOptTimestamp(d.photoDeletedAt))
+        && d.createdAt is timestamp
+        && d.updatedAt is timestamp;
     }
 
     // Validates /settlements/{settlementId} document schema.
@@ -1684,16 +1751,14 @@ service cloud.firestore {
         && (
           // Self daily check-in at any office in V(caller)
           (
-            ownPermScope('attendance.checkin') == 'self'
-            && isOwner(incoming().uid)
+            isOwner(incoming().uid)
+            && ownPermScope('attendance.checkin') == 'self'
             && incoming().checkIn != null
             && inValidAttendanceOffices(callerData(), incoming().officeId)
             && docDistrictOfficeId(incoming()) == derivedDistrictId(incoming().officeId)
             && 'homeOfficeId' in incoming()
-            && incoming().homeOfficeId == docOfficeId(callerData())
-            && 'boundDeviceId' in callerData()
-            && callerData().boundDeviceId is string
-            && incoming().checkIn.deviceId == callerData().boundDeviceId
+            && incomingHomeMatchesCallerHome(incoming().homeOfficeId)
+            && callerMatchesBoundDevice(incoming().checkIn.deviceId)
             && (!('checkOut' in incoming()) || incoming().checkOut == null)
             && incoming().settled == false
             && (!('finalStatus' in incoming()) || incoming().finalStatus == null)
@@ -1720,8 +1785,8 @@ service cloud.firestore {
         && (
           // Self same-day check-out at any office in V(caller)
           (
-            ownPermScope('attendance.checkin') == 'self'
-            && isOwner(existing().uid)
+            isOwner(existing().uid)
+            && ownPermScope('attendance.checkin') == 'self'
             && existing().checkIn != null
             && (!('checkOut' in existing()) || existing().checkOut == null)
             && incoming().checkOut != null
@@ -1729,9 +1794,7 @@ service cloud.firestore {
             && inValidAttendanceOffices(callerData(), incoming().checkOutOfficeId)
             && exists(/databases/$(database)/documents/offices/$(incoming().checkOutOfficeId))
             && docStr(incoming(), 'checkOutDistrictOfficeId') == derivedDistrictId(incoming().checkOutOfficeId)
-            && 'boundDeviceId' in callerData()
-            && callerData().boundDeviceId is string
-            && incoming().checkOut.deviceId == callerData().boundDeviceId
+            && callerMatchesBoundDevice(incoming().checkOut.deviceId)
             && incoming().diff(existing()).affectedKeys().hasOnly(['checkOut', 'checkOutOfficeId', 'checkOutDistrictOfficeId', 'updatedAt'])
           )
           // Settlement by review.settle holder with pinned punch data
